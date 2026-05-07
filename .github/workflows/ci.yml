@@ -16,9 +16,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Pin the sibling C++ checkout to the tag matching this port's
-  # release line. Bump in lockstep with our own version.
-  PROTOWIRE_CPP_REF: v0.70.0
+  # Pin the sibling C++ checkout to a specific commit. cpp@v0.70.0
+  # predates the __int128 → checked_arith refactor (MSVC), the
+  # protobuf-API-skew shim, and the MSVC source-charset fix; 9af2ec0
+  # is the first commit with all of those. Bump to a v0.70.x tag
+  # once cpp cuts one that includes them.
+  PROTOWIRE_CPP_REF: 9af2ec04918a417933848de1577cd61f83a710b0
 
 jobs:
   # ---------------------------------------------------------------------

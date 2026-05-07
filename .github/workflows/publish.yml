@@ -20,10 +20,17 @@ permissions:
   contents: read
 
 env:
-  # Pin the sibling C++ checkout to the tag matching this port's
-  # release line. Wheels publish a frozen FFI surface, so this must be
-  # an explicit tag — never `main`.
-  PROTOWIRE_CPP_REF: v0.70.0
+  # Pin the sibling C++ checkout to a specific commit. This is a
+  # frozen FFI surface, so it must be an immutable ref — never a
+  # branch.
+  #
+  # Using a SHA (not the v0.70.0 tag) because cpp@v0.70.0 predates
+  # the f1d3eb0 __int128 → checked_arith refactor needed for MSVC,
+  # plus the protobuf-API-skew shim and MSVC source-charset fixes.
+  # 9af2ec0 (cpp main, ci: MSVC source-charset + skip pxf_escapes)
+  # is the first commit with all of those. Bump to v0.70.x once cpp
+  # cuts a tag that includes them.
+  PROTOWIRE_CPP_REF: 9af2ec04918a417933848de1577cd61f83a710b0
 
 jobs:
   # ---------------------------------------------------------------------
