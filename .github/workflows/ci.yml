@@ -129,11 +129,11 @@ jobs:
           # container; host paths don't resolve. Override there.
           CIBW_ENVIRONMENT_LINUX: PROTOWIRE_CPP_DIR=/project/protowire-cpp-checkout
           PROTOWIRE_CPP_DIR: ${{ github.workspace }}/protowire-cpp-checkout
-          # Linux uses manylinux containers — install protobuf + a recent
-          # CMake there too.
-          CIBW_BEFORE_ALL_LINUX: >
-            yum install -y protobuf-compiler protobuf-devel ||
-            (apt-get update && apt-get install -y protobuf-compiler libprotobuf-dev libprotoc-dev)
+          # Linux uses manylinux containers — base image protobuf is
+          # too old (3.5 / 3.14) for our annotations, so build 25.3
+          # from source. See scripts/cibw_install_protobuf_linux.sh
+          # for the why.
+          CIBW_BEFORE_ALL_LINUX: bash {project}/scripts/cibw_install_protobuf_linux.sh
           CIBW_BEFORE_ALL_MACOS: brew install protobuf
           CIBW_BEFORE_ALL_WINDOWS: vcpkg install protobuf:x64-windows
           CIBW_ENVIRONMENT_WINDOWS: >-

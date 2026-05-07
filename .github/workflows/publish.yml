@@ -80,9 +80,10 @@ jobs:
           # macOS + Windows: cibuildwheel runs natively, so the host
           # path passed via the action-level env block works directly.
           PROTOWIRE_CPP_DIR: ${{ github.workspace }}/protowire-cpp-checkout
-          CIBW_BEFORE_ALL_LINUX: >
-            yum install -y protobuf-compiler protobuf-devel ||
-            (apt-get update && apt-get install -y protobuf-compiler libprotobuf-dev libprotoc-dev)
+          # The manylinux base image's protobuf-devel rpm is too old
+          # (3.5 / 3.14) and generates broken C++ for fields named
+          # `default`. Build 25.3 from source instead.
+          CIBW_BEFORE_ALL_LINUX: bash {project}/scripts/cibw_install_protobuf_linux.sh
           CIBW_BEFORE_ALL_MACOS: brew install protobuf
           CIBW_BEFORE_ALL_WINDOWS: vcpkg install protobuf:x64-windows
           CIBW_ENVIRONMENT_WINDOWS: >-
