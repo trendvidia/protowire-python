@@ -18,12 +18,14 @@ set -euxo pipefail
 PROTOBUF_VERSION=25.3
 WORKDIR=/tmp/protobuf-build
 
-mkdir -p "$WORKDIR"
+# The release-page tarball excludes git submodules (abseil-cpp,
+# utf8_range), so a curl|tar pipeline gives an empty third_party/.
+# Use a shallow clone with --recurse-submodules instead.
+rm -rf "$WORKDIR"
+git clone --depth 1 --branch "v${PROTOBUF_VERSION}" \
+  --recurse-submodules --shallow-submodules \
+  https://github.com/protocolbuffers/protobuf.git "$WORKDIR"
 cd "$WORKDIR"
-curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOBUF_VERSION}/protobuf-${PROTOBUF_VERSION}.tar.gz" \
-  -o protobuf.tar.gz
-tar -xzf protobuf.tar.gz
-cd "protobuf-${PROTOBUF_VERSION}"
 
 cmake -B build \
   -DCMAKE_BUILD_TYPE=Release \
