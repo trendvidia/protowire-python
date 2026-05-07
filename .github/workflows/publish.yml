@@ -89,6 +89,10 @@ jobs:
           CIBW_ENVIRONMENT_WINDOWS: >-
             CMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
             VCPKG_TARGET_TRIPLET=x64-windows
+          # Override cibuildwheel's default macOS repair command to
+          # drop the -v flag — the per-dylib INFO chatter from delocate
+          # is noise.
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: delocate-wheel --require-archs {delocate_archs} -w {dest_dir} {wheel}
           # Smoke-import the wheel after build to catch link errors and
           # missing symbols before they hit users.
           CIBW_TEST_COMMAND: python -c "import protowire; from protowire import pxf, sbe, envelope"
