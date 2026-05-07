@@ -42,10 +42,17 @@ jobs:
             archs: "x86_64"
           - os: ubuntu-latest
             archs: "aarch64"
+          # macOS deployment target must match the runner: Homebrew's
+          # bottled protobuf/abseil dylibs are built for the runner's
+          # macOS version, and delocate refuses to bundle dylibs whose
+          # min target is newer than the wheel's. macos-latest = 15,
+          # macos-13 = 13.
           - os: macos-latest
             archs: "arm64"
+            macosx_deployment_target: "15.0"
           - os: macos-13
             archs: "x86_64"
+            macosx_deployment_target: "13.0"
           - os: windows-latest
             archs: "AMD64"
     steps:
@@ -86,6 +93,9 @@ jobs:
           CIBW_BEFORE_ALL_LINUX: bash {project}/scripts/cibw_install_protobuf_linux.sh
           CIBW_BEFORE_ALL_MACOS: brew install protobuf
           CIBW_BEFORE_ALL_WINDOWS: vcpkg install protobuf:x64-windows
+          # See matrix comment: align wheel target with runner OS so
+          # delocate accepts brew's dylibs.
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
           CIBW_ENVIRONMENT_WINDOWS: >-
             CMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
             VCPKG_TARGET_TRIPLET=x64-windows

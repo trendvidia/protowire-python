@@ -136,6 +136,10 @@ jobs:
           CIBW_BEFORE_ALL_LINUX: bash {project}/scripts/cibw_install_protobuf_linux.sh
           CIBW_BEFORE_ALL_MACOS: brew install protobuf
           CIBW_BEFORE_ALL_WINDOWS: vcpkg install protobuf:x64-windows
+          # macOS: Homebrew's bottled dylibs are built for the runner's
+          # OS (macos-latest = 15). Set the wheel's deployment target
+          # to match so delocate accepts them.
+          MACOSX_DEPLOYMENT_TARGET: "15.0"
           CIBW_ENVIRONMENT_WINDOWS: >-
             CMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
             VCPKG_TARGET_TRIPLET=x64-windows
