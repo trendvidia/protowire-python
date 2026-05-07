@@ -49,17 +49,20 @@ jobs:
             archs: "x86_64"
           - os: ubuntu-latest
             archs: "aarch64"
-          # macOS deployment target must match the runner: Homebrew's
-          # bottled protobuf/abseil dylibs are built for the runner's
-          # macOS version, and delocate refuses to bundle dylibs whose
-          # min target is newer than the wheel's. macos-latest = 15,
-          # macos-13 = 13.
+          # macOS Apple Silicon only. The macos-13 (Intel) runner pool
+          # is being deprecated by GitHub Actions — runner availability
+          # is sporadic with no SLA, and we waited 9+ hours for the
+          # x86_64 leg to even start during the v0.70.0 release. Intel
+          # macOS users fall back to a source build via the published
+          # sdist for now; we'll add the x86_64 wheel back via
+          # universal2 (or a self-hosted runner) in a follow-up.
+          # Deployment target must match the runner: Homebrew's bottled
+          # protobuf/abseil dylibs are built for the runner's macOS
+          # version (macos-latest = 15), and delocate refuses to bundle
+          # dylibs whose min target is newer than the wheel's.
           - os: macos-latest
             archs: "arm64"
             macosx_deployment_target: "15.0"
-          - os: macos-13
-            archs: "x86_64"
-            macosx_deployment_target: "13.0"
           - os: windows-latest
             archs: "AMD64"
     steps:
