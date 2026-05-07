@@ -94,10 +94,23 @@ jobs:
             --config-settings=cmake.define.CMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
             --config-settings=cmake.define.VCPKG_TARGET_TRIPLET=x64-windows
 
-      - name: pytest
+      - name: pytest (Linux / macOS)
+        if: runner.os != 'Windows'
         env:
           PROTOWIRE_CPP_DIR: ${{ github.workspace }}/protowire-cpp-checkout
         run: pytest -v
+
+      - name: pytest (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PROTOWIRE_CPP_DIR: ${{ github.workspace }}\protowire-cpp-checkout
+        # editable installs don't bundle DLLs — _protowire.pyd resolves
+        # libprotobuf.dll / libabsl_*.dll out of vcpkg's bin dir at
+        # import time. Put it on PATH for the pytest run.
+        run: |
+          $env:PATH = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin;$env:PATH"
+          pytest -v
 
   # ---------------------------------------------------------------------
   # cibuildwheel smoke build — exercises the wheel-publishing path on
