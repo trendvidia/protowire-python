@@ -1,0 +1,57 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "nanobind>=2.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+# Distribution name on PyPI (the bare `protowire` is taken by an unrelated
+# 2021 CLI tool). The import name stays `import protowire` — these two
+# names are independent (cf. python-dateutil → import dateutil).
+name = "protowire-python"
+version = "0.70.0"
+description = "Python wrapper around protowire-cpp — PXF text, SBE binary, and envelope codecs."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "TrendVidia, LLC", email = "open-source@trendvidia.com" }]
+keywords = ["protobuf", "pxf", "sbe", "wire-format", "fix", "trading"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Financial and Insurance Industry",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: C++",
+  "Topic :: Software Development :: Libraries",
+  "Topic :: System :: Networking",
+  "Typing :: Typed",
+]
+dependencies = ["protobuf>=4.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://protowire.org"
+Repository = "https://github.com/trendvidia/protowire-python"
+"Bug Tracker" = "https://github.com/trendvidia/protowire-python/issues"
+Changelog = "https://github.com/trendvidia/protowire-python/blob/main/CHANGELOG.md"
+Specification = "https://github.com/trendvidia/protowire"
+
+[tool.scikit-build]
+minimum-version = "0.10"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["src/protowire"]
+wheel.expand-macos-universal-tags = false
+
+[tool.scikit-build.cmake]
+build-type = "Release"
+
+[tool.scikit-build.cmake.define]
+# Override at install time with: --config-settings=cmake.define.PROTOWIRE_CPP_DIR=/abs/path

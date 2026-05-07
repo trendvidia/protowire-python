@@ -1,0 +1,23 @@
+# Build artefacts
+build/
+dist/
+*.egg-info/
+*.so
+*.dylib
+*.o
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtualenvs
+.venv/
+venv/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store

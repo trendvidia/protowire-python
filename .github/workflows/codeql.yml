@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 TrendVidia, LLC.
+
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "37 6 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  PROTOWIRE_CPP_REF: v0.70.0
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # python: pure-Python wrapper code. cpp: src/_protowire/module.cc
+        # (the FFI shim) plus the linked protowire-cpp sources.
+        language: [python, cpp]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Checkout protowire-cpp
+        if: matrix.language == 'cpp'
+        uses: actions/checkout@v6
+        with:
+          repository: trendvidia/protowire-cpp
+          ref: ${{ env.PROTOWIRE_CPP_REF }}
+          path: protowire-cpp-checkout
+
+      - name: Install build deps (cpp)
+        if: matrix.language == 'cpp'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-13 g++-13 protobuf-compiler libprotobuf-dev libprotoc-dev
+
+      - name: Set up Python (cpp build needs nanobind in PATH)
+        if: matrix.language == 'cpp'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+
+      - name: Configure + build the FFI extension (drives cpp extraction)
+        if: matrix.language == 'cpp'
+        env:
+          CC:  gcc-13
+          CXX: g++-13
+          PROTOWIRE_CPP_DIR: ${{ github.workspace }}/protowire-cpp-checkout
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . -v
+
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"

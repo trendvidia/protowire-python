@@ -1,0 +1,139 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 TrendVidia, LLC.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Pin the sibling C++ checkout to the tag matching this port's
+  # release line. Bump in lockstep with our own version.
+  PROTOWIRE_CPP_REF: v0.70.0
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Build + pytest matrix across {Linux, macOS, Windows} ×
+  # CPython 3.10–3.13. The native extension is rebuilt on every job
+  # because the C++ codec is a build-time dependency, not a wheel.
+  # ---------------------------------------------------------------------
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v6
+
+      # Sibling protowire-cpp checkout. CMakeLists.txt looks here by
+      # default (../protowire-cpp). The ref is pinned via env var above
+      # so a codec change requires explicitly bumping both repos.
+      - name: Checkout protowire-cpp
+        uses: actions/checkout@v6
+        with:
+          repository: trendvidia/protowire-cpp
+          ref: ${{ env.PROTOWIRE_CPP_REF }}
+          path: protowire-cpp-checkout
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install protobuf (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            protobuf-compiler libprotobuf-dev libprotoc-dev
+
+      - name: Install protobuf (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Install protobuf (Windows / vcpkg)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: vcpkg install protobuf:x64-windows
+
+      - name: Install package + test deps (Linux / macOS)
+        if: runner.os != 'Windows'
+        env:
+          PROTOWIRE_CPP_DIR: ${{ github.workspace }}/protowire-cpp-checkout
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[test]' -v
+
+      - name: Install package + test deps (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PROTOWIRE_CPP_DIR: ${{ github.workspace }}\protowire-cpp-checkout
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[test]' -v `
+            --config-settings=cmake.define.CMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            --config-settings=cmake.define.VCPKG_TARGET_TRIPLET=x64-windows
+
+      - name: pytest
+        env:
+          PROTOWIRE_CPP_DIR: ${{ github.workspace }}/protowire-cpp-checkout
+        run: pytest -v
+
+  # ---------------------------------------------------------------------
+  # cibuildwheel smoke build — exercises the wheel-publishing path on
+  # every PR so packaging regressions surface before release time.
+  # Builds one Python version per OS to keep CI fast; the full matrix
+  # runs in publish.yml on tag push.
+  # ---------------------------------------------------------------------
+  cibuildwheel-smoke:
+    name: cibuildwheel smoke / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Checkout protowire-cpp
+        uses: actions/checkout@v6
+        with:
+          repository: trendvidia/protowire-cpp
+          ref: ${{ env.PROTOWIRE_CPP_REF }}
+          path: protowire-cpp-checkout
+
+      - name: Build one wheel
+        uses: pypa/cibuildwheel@v3
+        env:
+          # Build only one CPython version per OS for the smoke job —
+          # the full matrix is reserved for the release workflow.
+          CIBW_BUILD: cp312-*
+          CIBW_SKIP: "*-musllinux_* *-manylinux_i686 pp*"
+          CIBW_ARCHS_LINUX: x86_64
+          CIBW_ARCHS_MACOS: arm64
+          CIBW_ARCHS_WINDOWS: AMD64
+          CIBW_ENVIRONMENT_PASS_LINUX: PROTOWIRE_CPP_DIR
+          PROTOWIRE_CPP_DIR: ${{ github.workspace }}/protowire-cpp-checkout
+          # Linux uses manylinux containers — install protobuf + a recent
+          # CMake there too.
+          CIBW_BEFORE_ALL_LINUX: >
+            yum install -y protobuf-compiler protobuf-devel ||
+            (apt-get update && apt-get install -y protobuf-compiler libprotobuf-dev libprotoc-dev)
+          CIBW_BEFORE_ALL_MACOS: brew install protobuf
+          CIBW_BEFORE_ALL_WINDOWS: vcpkg install protobuf:x64-windows
+          CIBW_ENVIRONMENT_WINDOWS: >-
+            CMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+            VCPKG_TARGET_TRIPLET=x64-windows

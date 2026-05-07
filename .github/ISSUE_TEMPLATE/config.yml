@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 TrendVidia, LLC.
+
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/trendvidia/protowire-python/blob/main/SECURITY.md
+    about: >-
+      Decoder crashes, hangs, OOMs, FFI refcount errors, GIL violations
+      — email security@trendvidia.com per SECURITY.md, do not file a
+      public issue.
+  - name: Codec bug (also reproduces in C++)
+    url: https://github.com/trendvidia/protowire-cpp/issues/new?template=bug_report.md
+    about: >-
+      The wire codec is in protowire-cpp and reaches Python through
+      nanobind. Codec bugs that also reproduce in C++ directly belong
+      there.
+  - name: Cross-port wire-equivalence regression
+    url: https://github.com/trendvidia/protowire/issues/new?template=bug_report.md
+    about: >-
+      Same input produces different output on different ports. File
+      these upstream against trendvidia/protowire so all 9 port repos
+      can coordinate the fix.
+  - name: Spec / grammar / annotation discussion
+    url: https://github.com/trendvidia/protowire/discussions
+    about: >-
+      Wire format, PXF grammar, proto annotation design — the spec
+      project owns these decisions.

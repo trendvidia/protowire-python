@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 TrendVidia, LLC.
+#
+# Code ownership for protowire-python.
+
+*                              @trendvidia/maintainers
+
+# --- FFI boundary (cross-language safety scrutiny applies) --------------
+/src/_protowire/                @trendvidia/maintainers
+
+# --- Public Python API --------------------------------------------------
+/src/protowire/                 @trendvidia/maintainers
+
+# --- Tests + cross-port harnesses (open to broader reviewer pool) -------
+/tests/                         @trendvidia/contributors @trendvidia/maintainers
+/scripts/                       @trendvidia/contributors @trendvidia/maintainers
+/testdata/                      @trendvidia/contributors @trendvidia/maintainers
+
+# --- Build, packaging, CI -----------------------------------------------
+/.github/                       @trendvidia/maintainers
+/CMakeLists.txt                 @trendvidia/maintainers
+/pyproject.toml                 @trendvidia/maintainers
