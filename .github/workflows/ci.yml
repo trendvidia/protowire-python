@@ -156,6 +156,10 @@ jobs:
           CIBW_BEFORE_ALL_LINUX: bash {project}/scripts/cibw_install_protobuf_linux.sh
           CIBW_BEFORE_ALL_MACOS: brew install protobuf
           CIBW_BEFORE_ALL_WINDOWS: vcpkg install protobuf:x64-windows
+          # delvewheel is only auto-installed when cibuildwheel uses
+          # its default Windows repair command — once we override
+          # CIBW_REPAIR_WHEEL_COMMAND_WINDOWS we have to install it.
+          CIBW_BEFORE_BUILD_WINDOWS: pip install delvewheel
           # macOS: Homebrew's bottled dylibs are built for the runner's
           # OS (macos-latest = 15). Set the wheel's deployment target
           # to match so delocate accepts them.
@@ -171,5 +175,5 @@ jobs:
           # See publish.yml for the full rationale.
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >-
             delvewheel repair
-            --add-path "$VCPKG_INSTALLATION_ROOT\\installed\\x64-windows\\bin"
+            --add-path "%VCPKG_INSTALLATION_ROOT%\installed\x64-windows\bin"
             -w {dest_dir} {wheel}

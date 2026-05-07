@@ -7,10 +7,24 @@ Python bindings.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# Windows: editable installs don't bundle DLLs and Python 3.8+ ignores
+# PATH for extension-module DLL deps — `os.add_dll_directory` is the
+# only knob. Add vcpkg's bin dir before the test modules import
+# `protowire` (and trigger `_protowire.pyd`'s DLL resolution). conftest.py
+# runs before any test-file collection, which is when the import attempt
+# happens.
+if sys.platform == "win32":
+    _vcpkg_root = os.environ.get("VCPKG_INSTALLATION_ROOT")
+    if _vcpkg_root:
+        _vcpkg_bin = Path(_vcpkg_root) / "installed" / "x64-windows" / "bin"
+        if _vcpkg_bin.is_dir():
+            os.add_dll_directory(str(_vcpkg_bin))
 
 import pytest
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory

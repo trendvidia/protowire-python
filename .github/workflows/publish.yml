@@ -107,6 +107,11 @@ jobs:
           # didn't reliably pick up the toolchain switch through
           # CIBW_ENVIRONMENT_WINDOWS in earlier attempts.
           CIBW_BEFORE_ALL_WINDOWS: vcpkg install protobuf:x64-windows
+          # delvewheel is only auto-installed when cibuildwheel uses its
+          # default Windows repair command; once we override
+          # CIBW_REPAIR_WHEEL_COMMAND_WINDOWS we have to install it
+          # ourselves.
+          CIBW_BEFORE_BUILD_WINDOWS: pip install delvewheel
           # See matrix comment: align wheel target with runner OS so
           # delocate accepts brew's dylibs.
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
@@ -120,12 +125,13 @@ jobs:
           # cibuildwheel ships with no Windows wheel-repair by default,
           # so libprotobuf.dll and libabsl_*.dll never get bundled into
           # the wheel — `import protowire` fails with "DLL load failed"
-          # at user install time. Use delvewheel (cibuildwheel
-          # auto-installs it) and point it at vcpkg's bin dir so it can
-          # find the runtime DLLs to bundle.
+          # at user install time. Use delvewheel and point it at
+          # vcpkg's bin dir so it can find the runtime DLLs to bundle.
+          # The repair command runs in cmd.exe on Windows, so use
+          # %VAR% syntax (not bash $VAR) for env-var expansion.
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >-
             delvewheel repair
-            --add-path "$VCPKG_INSTALLATION_ROOT\\installed\\x64-windows\\bin"
+            --add-path "%VCPKG_INSTALLATION_ROOT%\installed\x64-windows\bin"
             -w {dest_dir} {wheel}
           # Smoke-import the wheel after build to catch link errors and
           # missing symbols before they hit users.
