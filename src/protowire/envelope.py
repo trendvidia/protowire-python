@@ -84,7 +84,10 @@ def _enc_submessage(out: bytearray, num: int, sub: bytes) -> None:
 def _dec_varint(buf: bytes, i: int) -> tuple[int, int]:
     v = 0
     shift = 0
+    n = len(buf)
     while True:
+        if i >= n:
+            raise ValueError("truncated varint")
         b = buf[i]
         i += 1
         v |= (b & 0x7F) << shift
@@ -130,8 +133,10 @@ def _skip_field(buf: bytes, i: int, wire: int) -> int:
     if wire == 1:  # fixed64
         return i + 8
     if wire == 2:  # length-delimited
-        n, i = _dec_varint(buf, i)
-        return i + n
+        ln, i = _dec_varint(buf, i)
+        if ln < 0 or i + ln > len(buf):
+            raise ValueError("truncated length-delimited field")
+        return i + ln
     if wire == 5:  # fixed32
         return i + 4
     raise ValueError(f"unsupported wire type: {wire}")

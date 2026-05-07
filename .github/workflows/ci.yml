@@ -116,7 +116,7 @@ jobs:
           path: protowire-cpp-checkout
 
       - name: Build one wheel
-        uses: pypa/cibuildwheel@v3
+        uses: pypa/cibuildwheel@v3.4.1
         env:
           # Build only one CPython version per OS for the smoke job —
           # the full matrix is reserved for the release workflow.

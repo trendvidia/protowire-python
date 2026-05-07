@@ -9,6 +9,8 @@ envelope schema.
 
 from __future__ import annotations
 
+import pytest
+
 from protowire import envelope
 
 
@@ -142,6 +144,24 @@ def test_decode_negative_status_round_trip():
     got = envelope.Envelope.decode(e.encode())
     assert got.status == -1
     assert got.data == b"x"
+
+
+# --- malformed input: cross-port contract is ValueError, not IndexError --
+
+
+def test_decode_truncated_varint_raises_value_error():
+    # Tag for field 1 (status, varint) followed by a continuation byte and EOF.
+    # Covers _dec_varint — pre-fix this raised IndexError.
+    with pytest.raises(ValueError):
+        envelope.Envelope.decode(bytes([0x08, 0x80]))
+
+
+def test_decode_skipped_field_truncated_length_raises_value_error():
+    # Unknown field number 9 (wire=2), claimed length 50, no payload.
+    # Covers _skip_field — pre-fix this returned a bogus offset and
+    # the next _dec_varint then raised IndexError.
+    with pytest.raises(ValueError):
+        envelope.Envelope.decode(bytes([(9 << 3) | 2, 50]))
 
 
 def test_decode_dump_envelope_matches_canonical():
