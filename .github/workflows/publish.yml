@@ -86,7 +86,7 @@ jobs:
           # missing symbols before they hit users.
           CIBW_TEST_COMMAND: python -c "import protowire; from protowire import pxf, sbe, envelope"
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.archs }}
           path: ./wheelhouse/*.whl
@@ -113,7 +113,7 @@ jobs:
           pip install build
           python -m build --sdist
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: sdist
           path: dist/*.tar.gz
