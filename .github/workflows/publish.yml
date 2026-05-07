@@ -99,20 +99,34 @@ jobs:
           # `default`. Build 25.3 from source instead.
           CIBW_BEFORE_ALL_LINUX: bash {project}/scripts/cibw_install_protobuf_linux.sh
           CIBW_BEFORE_ALL_MACOS: brew install protobuf
-          # Static triplet (static libs + dynamic CRT to match Python's
-          # CRT) — gives a self-contained wheel with no runtime DLL
-          # hunt for libprotobuf / libabsl.
-          CIBW_BEFORE_ALL_WINDOWS: vcpkg install protobuf:x64-windows-static-md
+          # Use the default dynamic triplet — vcpkg integrates with
+          # CMake's find_package via the toolchain file, and delvewheel
+          # bundles the resulting libprotobuf.dll / libabsl_*.dll into
+          # the wheel (see CIBW_REPAIR_WHEEL_COMMAND_WINDOWS below).
+          # The static-md triplet would also work but scikit-build-core
+          # didn't reliably pick up the toolchain switch through
+          # CIBW_ENVIRONMENT_WINDOWS in earlier attempts.
+          CIBW_BEFORE_ALL_WINDOWS: vcpkg install protobuf:x64-windows
           # See matrix comment: align wheel target with runner OS so
           # delocate accepts brew's dylibs.
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
           CIBW_ENVIRONMENT_WINDOWS: >-
             CMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
-            VCPKG_TARGET_TRIPLET=x64-windows-static-md
+            VCPKG_TARGET_TRIPLET=x64-windows
           # Override cibuildwheel's default macOS repair command to
           # drop the -v flag — the per-dylib INFO chatter from delocate
           # is noise.
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: delocate-wheel --require-archs {delocate_archs} -w {dest_dir} {wheel}
+          # cibuildwheel ships with no Windows wheel-repair by default,
+          # so libprotobuf.dll and libabsl_*.dll never get bundled into
+          # the wheel — `import protowire` fails with "DLL load failed"
+          # at user install time. Use delvewheel (cibuildwheel
+          # auto-installs it) and point it at vcpkg's bin dir so it can
+          # find the runtime DLLs to bundle.
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >-
+            delvewheel repair
+            --add-path "$VCPKG_INSTALLATION_ROOT\\installed\\x64-windows\\bin"
+            -w {dest_dir} {wheel}
           # Smoke-import the wheel after build to catch link errors and
           # missing symbols before they hit users.
           CIBW_TEST_COMMAND: python -c "import protowire; from protowire import pxf, sbe, envelope"
