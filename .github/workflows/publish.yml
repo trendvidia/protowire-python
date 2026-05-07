@@ -62,7 +62,7 @@ jobs:
       # container — register binfmt handlers first.
       - name: Set up QEMU
         if: matrix.os == 'ubuntu-latest' && matrix.archs == 'aarch64'
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
         with:
           platforms: arm64
 
