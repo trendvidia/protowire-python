@@ -125,7 +125,9 @@ jobs:
           CIBW_ARCHS_LINUX: x86_64
           CIBW_ARCHS_MACOS: arm64
           CIBW_ARCHS_WINDOWS: AMD64
-          CIBW_ENVIRONMENT_PASS_LINUX: PROTOWIRE_CPP_DIR
+          # Linux: source is mounted at /project inside the manylinux
+          # container; host paths don't resolve. Override there.
+          CIBW_ENVIRONMENT_LINUX: PROTOWIRE_CPP_DIR=/project/protowire-cpp-checkout
           PROTOWIRE_CPP_DIR: ${{ github.workspace }}/protowire-cpp-checkout
           # Linux uses manylinux containers — install protobuf + a recent
           # CMake there too.
