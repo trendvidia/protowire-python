@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -235,6 +236,89 @@ PxfValidateDescriptor(nb::bytes fds_bytes, const std::string& full_name) {
   return out;
 }
 
+// --- PyTableReader: streaming @table consumption -------------------------
+//
+// Wraps protowire::pxf::TableReader. The reader takes a std::istream*; we
+// hold the istringstream alongside the reader so its lifetime is bound to
+// the Python object. Input is provided as bytes (PR-2 scope); a file-like
+// streambuf bridge is a possible follow-up.
+class PyTableReader {
+ public:
+  static std::unique_ptr<PyTableReader> FromBytes(nb::bytes data) {
+    auto out = std::unique_ptr<PyTableReader>(new PyTableReader());
+    out->stream_ = std::make_unique<std::istringstream>(
+        std::string(data.c_str(), data.size()));
+    auto tr = protowire::pxf::TableReader::Create(out->stream_.get());
+    if (!tr.ok()) {
+      throw nb::value_error(("pxf.TableReader: " + tr.status().ToString()).c_str());
+    }
+    out->reader_ = std::move(*tr);
+    // Marshal the side-channel directives once at construction; they're
+    // fixed for the reader's lifetime.
+    for (const auto& d : out->reader_->Directives()) {
+      out->directives_.emplace_back(
+          d.name, d.prefixes, d.type,
+          nb::bytes(d.body.data(), d.body.size()),
+          d.has_body, d.pos.line, d.pos.column);
+    }
+    return out;
+  }
+
+  const std::string& Type() const { return reader_->Type(); }
+  const std::vector<std::string>& Columns() const { return reader_->Columns(); }
+  const std::vector<PyDirective>& Directives() const { return directives_; }
+  bool Done() const { return reader_->Done(); }
+
+  // Returns the next row as a Python list of cells, or None at EOF.
+  // Raises ValueError on parse error.
+  nb::object NextOrNone() {
+    if (reader_->Done()) return nb::none();
+    protowire::pxf::TableRow row;
+    auto s = reader_->Next(&row);
+    if (!s.ok()) {
+      throw nb::value_error(("pxf.TableReader.next: " + s.ToString()).c_str());
+    }
+    if (reader_->Done()) return nb::none();
+    return RowToList(row);
+  }
+
+  // Iterator protocol: __next__ raises StopIteration at EOF.
+  nb::object Next() {
+    if (reader_->Done()) throw nb::stop_iteration();
+    protowire::pxf::TableRow row;
+    auto s = reader_->Next(&row);
+    if (!s.ok()) {
+      throw nb::value_error(("pxf.TableReader.next: " + s.ToString()).c_str());
+    }
+    if (reader_->Done()) throw nb::stop_iteration();
+    return RowToList(row);
+  }
+
+  // Drains the remaining buffered + underlying bytes. Only meaningful
+  // after Done(); the Python wrapper exposes this as a method that
+  // returns bytes so callers can chain a second TableReader on
+  // multi-@table documents.
+  nb::bytes Tail() {
+    auto t = reader_->Tail();
+    std::ostringstream buf;
+    buf << t->rdbuf();
+    std::string s = buf.str();
+    return nb::bytes(s.data(), s.size());
+  }
+
+ private:
+  static nb::object RowToList(const protowire::pxf::TableRow& row) {
+    std::vector<nb::object> cells;
+    cells.reserve(row.cells.size());
+    for (const auto& cell : row.cells) cells.push_back(CellToPyTuple(cell));
+    return nb::cast(cells);
+  }
+
+  std::unique_ptr<std::istringstream> stream_;
+  std::unique_ptr<protowire::pxf::TableReader> reader_;
+  std::vector<PyDirective> directives_;
+};
+
 // Binary proto bytes -> PXF text.
 std::string PxfMarshal(nb::bytes msg_bytes, nb::bytes fds_bytes,
                        const std::string& full_name) {
@@ -417,6 +501,17 @@ NB_MODULE(_protowire, m) {
         "full_name"_a, "discard_unknown"_a = false, "skip_validate"_a = false);
   m.def("pxf_marshal", &PxfMarshal, "msg_bytes"_a, "fds"_a, "full_name"_a);
   m.def("pxf_validate_descriptor", &PxfValidateDescriptor, "fds"_a, "full_name"_a);
+
+  nb::class_<PyTableReader>(m, "PxfTableReader")
+      .def_static("from_bytes", &PyTableReader::FromBytes, "data"_a)
+      .def_prop_ro("type", &PyTableReader::Type)
+      .def_prop_ro("columns", &PyTableReader::Columns)
+      .def_prop_ro("directives", &PyTableReader::Directives)
+      .def_prop_ro("done", &PyTableReader::Done)
+      .def("next_or_none", &PyTableReader::NextOrNone)
+      .def("tail", &PyTableReader::Tail)
+      .def("__iter__", [](PyTableReader& self) -> PyTableReader& { return self; })
+      .def("__next__", &PyTableReader::Next);
 
   nb::class_<SbeCodec>(m, "SbeCodec")
       .def_static("create", &SbeCodec::Create, "fds"_a, "file_names"_a)
