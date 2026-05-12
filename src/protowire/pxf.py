@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass, field
-from typing import Iterator, Literal, Union
+from typing import Literal, Union
 
 from google.protobuf.message import Message
 
