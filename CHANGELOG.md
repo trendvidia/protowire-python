@@ -11,6 +11,39 @@ format changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **CI pin to protowire-cpp v0.75.0.** The cpp sibling now ships the
+  PXF v0.72-series feature set (directive grammar, schema validator,
+  Result accessors, TableReader streaming). The pin moves from the
+  pre-v0.72 commit `9af2ec0` to the `v0.75.0` tag so the Python
+  wrapper exposes the new surface.
+
+### Added
+
+- **`pxf.Result.directives` / `pxf.Result.tables`** — the document-root
+  directives the decoder saw at `unmarshal_full` time, exposed as
+  immutable dataclasses:
+  - `pxf.Directive(name, prefixes, type, body, has_body, line, column)`
+    for generic `@<name> *(prefix) [{ ... }]` blocks. `body` is the
+    raw bytes between `{` and `}` (verbatim), suitable for handing to
+    a follow-up `pxf.unmarshal` against the consumer's message type.
+    `type` keeps the v0.72.0 single-prefix back-compat shape.
+  - `pxf.TableDirective(type, columns, rows)` for `@table` directives,
+    with cells modeled as `None` (absent) or a `(kind, value)` 2-tuple
+    where kind ∈ {`"null"`, `"string"`, `"int"`, `"float"`, `"bool"`,
+    `"bytes"`, `"ident"`, `"timestamp"`, `"duration"`} — faithful to
+    the three-state cell grammar (absent / present-but-null /
+    present-with-value, draft §3.4.4).
+- **`pxf.validate_descriptor(msg)` + `pxf.Violation`** — schema
+  reserved-name check (draft §3.13). Returns the list of fields,
+  oneofs, and enum values whose names case-sensitively match a PXF
+  value keyword (`null` / `true` / `false`). Sorted by element FQN.
+- **`skip_validate` keyword** on `pxf.unmarshal` and
+  `pxf.unmarshal_full` (and the `_bytes` variants) — opt-out of the
+  per-call schema validator when the caller has already validated the
+  descriptor at registry-load time.
+
 ## [0.70.0]
 
 Initial public release. The version number aligns this port with the rest

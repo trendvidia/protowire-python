@@ -17,10 +17,12 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <google/protobuf/descriptor.h>
@@ -77,9 +79,59 @@ const pbuf::Descriptor* FindDescriptor(const SchemaBundle& s,
 
 // --- pxf bindings ---------------------------------------------------------
 
+// CellToPyTuple converts a single AST cell value (or std::nullopt for an
+// absent cell) into the FFI shape consumed by pxf.py — `None` for absent,
+// `(kind, value)` otherwise. Used by PxfUnmarshalFull for @table rows.
+//
+// kind values mirror the AST variant tags:
+//   "null"      → nb::none()
+//   "string"    → str  (already-unescaped UTF-8)
+//   "int"       → str  (raw integer text — Python wrapper decides parse)
+//   "float"     → str  (raw float text)
+//   "bool"      → bool
+//   "bytes"     → bytes
+//   "ident"     → str
+//   "timestamp" → str  (raw RFC3339)
+//   "duration"  → str  (raw duration)
+nb::object CellToPyTuple(const std::optional<protowire::pxf::ValuePtr>& cell) {
+  if (!cell.has_value()) return nb::none();
+  using namespace protowire::pxf;
+  return std::visit(
+      [](const auto& p) -> nb::object {
+        using T = std::decay_t<decltype(*p)>;
+        if constexpr (std::is_same_v<T, NullVal>) {
+          return nb::make_tuple(std::string("null"), nb::none());
+        } else if constexpr (std::is_same_v<T, StringVal>) {
+          return nb::make_tuple(std::string("string"), p->value);
+        } else if constexpr (std::is_same_v<T, IntVal>) {
+          return nb::make_tuple(std::string("int"), p->raw);
+        } else if constexpr (std::is_same_v<T, FloatVal>) {
+          return nb::make_tuple(std::string("float"), p->raw);
+        } else if constexpr (std::is_same_v<T, BoolVal>) {
+          return nb::make_tuple(std::string("bool"), p->value);
+        } else if constexpr (std::is_same_v<T, BytesVal>) {
+          return nb::make_tuple(
+              std::string("bytes"),
+              nb::bytes(reinterpret_cast<const char*>(p->value.data()), p->value.size()));
+        } else if constexpr (std::is_same_v<T, IdentVal>) {
+          return nb::make_tuple(std::string("ident"), p->name);
+        } else if constexpr (std::is_same_v<T, TimestampVal>) {
+          return nb::make_tuple(std::string("timestamp"), p->raw);
+        } else if constexpr (std::is_same_v<T, DurationVal>) {
+          return nb::make_tuple(std::string("duration"), p->raw);
+        } else {
+          // List / Block are rejected at @table cell-parse time, so this
+          // branch is unreachable for cells. Surface as a clean error.
+          return nb::make_tuple(std::string("unknown"), nb::none());
+        }
+      },
+      *cell);
+}
+
 // PXF text -> binary proto bytes.
 nb::bytes PxfUnmarshal(nb::bytes text, nb::bytes fds_bytes,
-                       const std::string& full_name, bool discard_unknown) {
+                       const std::string& full_name, bool discard_unknown,
+                       bool skip_validate) {
   auto schema = BuildSchema(std::string_view(fds_bytes.c_str(), fds_bytes.size()));
   const auto* desc = FindDescriptor(schema, full_name);
   std::unique_ptr<pbuf::Message> msg(
@@ -87,6 +139,7 @@ nb::bytes PxfUnmarshal(nb::bytes text, nb::bytes fds_bytes,
 
   protowire::pxf::UnmarshalOptions opts;
   opts.discard_unknown = discard_unknown;
+  opts.skip_validate = skip_validate;
   auto st = protowire::pxf::Unmarshal(
       std::string_view(text.c_str(), text.size()), msg.get(), opts);
   if (!st.ok()) {
@@ -99,10 +152,20 @@ nb::bytes PxfUnmarshal(nb::bytes text, nb::bytes fds_bytes,
   return nb::bytes(out.data(), out.size());
 }
 
-// PXF text -> (binary proto bytes, set_paths, null_paths).
-std::tuple<nb::bytes, std::vector<std::string>, std::vector<std::string>>
+// Directive FFI shape: (name, prefixes, type, body, has_body, line, column).
+using PyDirective = std::tuple<std::string, std::vector<std::string>, std::string,
+                               nb::bytes, bool, int, int>;
+// TableDirective FFI shape: (type, columns, rows) where rows is a list of
+// lists of cells (each cell None or (kind, value); see CellToPyTuple).
+using PyTableDirective = std::tuple<std::string, std::vector<std::string>,
+                                    std::vector<std::vector<nb::object>>>;
+
+// PXF text -> (binary proto bytes, set_paths, null_paths, directives, tables).
+std::tuple<nb::bytes, std::vector<std::string>, std::vector<std::string>,
+           std::vector<PyDirective>, std::vector<PyTableDirective>>
 PxfUnmarshalFull(nb::bytes text, nb::bytes fds_bytes,
-                 const std::string& full_name, bool discard_unknown) {
+                 const std::string& full_name, bool discard_unknown,
+                 bool skip_validate) {
   auto schema = BuildSchema(std::string_view(fds_bytes.c_str(), fds_bytes.size()));
   const auto* desc = FindDescriptor(schema, full_name);
   std::unique_ptr<pbuf::Message> msg(
@@ -110,6 +173,7 @@ PxfUnmarshalFull(nb::bytes text, nb::bytes fds_bytes,
 
   protowire::pxf::UnmarshalOptions opts;
   opts.discard_unknown = discard_unknown;
+  opts.skip_validate = skip_validate;
   auto r = protowire::pxf::UnmarshalFull(
       std::string_view(text.c_str(), text.size()), msg.get(), opts);
   if (!r.ok()) {
@@ -119,9 +183,56 @@ PxfUnmarshalFull(nb::bytes text, nb::bytes fds_bytes,
   if (!msg->SerializeToString(&out)) {
     throw nb::value_error("pxf.unmarshal_full: proto serialization failed");
   }
+  // Marshal directives.
+  std::vector<PyDirective> py_dirs;
+  py_dirs.reserve(r->Directives().size());
+  for (const auto& d : r->Directives()) {
+    py_dirs.emplace_back(
+        d.name, d.prefixes, d.type,
+        nb::bytes(d.body.data(), d.body.size()),
+        d.has_body, d.pos.line, d.pos.column);
+  }
+  // Marshal tables.
+  std::vector<PyTableDirective> py_tables;
+  py_tables.reserve(r->Tables().size());
+  for (const auto& t : r->Tables()) {
+    std::vector<std::vector<nb::object>> py_rows;
+    py_rows.reserve(t.rows.size());
+    for (const auto& row : t.rows) {
+      std::vector<nb::object> py_cells;
+      py_cells.reserve(row.cells.size());
+      for (const auto& cell : row.cells) py_cells.push_back(CellToPyTuple(cell));
+      py_rows.push_back(std::move(py_cells));
+    }
+    py_tables.emplace_back(t.type, t.columns, std::move(py_rows));
+  }
   return {nb::bytes(out.data(), out.size()),
           r->SetFields(),
-          r->NullFields()};
+          r->NullFields(),
+          std::move(py_dirs),
+          std::move(py_tables)};
+}
+
+// PXF schema reserved-name check (draft §3.13). Returns a list of
+// (kind, element, name, file) tuples. Empty list ⇒ conformant schema.
+// kind values: "field" / "oneof" / "enum_value".
+std::vector<std::tuple<std::string, std::string, std::string, std::string>>
+PxfValidateDescriptor(nb::bytes fds_bytes, const std::string& full_name) {
+  auto schema = BuildSchema(std::string_view(fds_bytes.c_str(), fds_bytes.size()));
+  const auto* desc = FindDescriptor(schema, full_name);
+  auto vs = protowire::pxf::ValidateDescriptor(desc);
+  std::vector<std::tuple<std::string, std::string, std::string, std::string>> out;
+  out.reserve(vs.size());
+  for (const auto& v : vs) {
+    std::string kind;
+    switch (v.kind) {
+      case protowire::pxf::ViolationKind::kField:     kind = "field";      break;
+      case protowire::pxf::ViolationKind::kOneof:     kind = "oneof";      break;
+      case protowire::pxf::ViolationKind::kEnumValue: kind = "enum_value"; break;
+    }
+    out.emplace_back(std::move(kind), v.element, v.name, v.file);
+  }
+  return out;
 }
 
 // Binary proto bytes -> PXF text.
@@ -301,10 +412,11 @@ NB_MODULE(_protowire, m) {
   m.doc() = "protowire native extension (nanobind shim around protowire-cpp)";
 
   m.def("pxf_unmarshal", &PxfUnmarshal, "text"_a, "fds"_a, "full_name"_a,
-        "discard_unknown"_a = false);
+        "discard_unknown"_a = false, "skip_validate"_a = false);
   m.def("pxf_unmarshal_full", &PxfUnmarshalFull, "text"_a, "fds"_a,
-        "full_name"_a, "discard_unknown"_a = false);
+        "full_name"_a, "discard_unknown"_a = false, "skip_validate"_a = false);
   m.def("pxf_marshal", &PxfMarshal, "msg_bytes"_a, "fds"_a, "full_name"_a);
+  m.def("pxf_validate_descriptor", &PxfValidateDescriptor, "fds"_a, "full_name"_a);
 
   nb::class_<SbeCodec>(m, "SbeCodec")
       .def_static("create", &SbeCodec::Create, "fds"_a, "file_names"_a)

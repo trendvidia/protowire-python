@@ -16,12 +16,11 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Pin the sibling C++ checkout to a specific commit. cpp@v0.70.0
-  # predates the __int128 → checked_arith refactor (MSVC), the
-  # protobuf-API-skew shim, and the MSVC source-charset fix; 9af2ec0
-  # is the first commit with all of those. Bump to a v0.70.x tag
-  # once cpp cuts one that includes them.
-  PROTOWIRE_CPP_REF: 9af2ec04918a417933848de1577cd61f83a710b0
+  # Pin the sibling C++ checkout to a specific tag. v0.75.0 carries the
+  # PXF v0.72-series feature set (@<name> / @entry / @table directive
+  # grammar, schema validator, Result accessors, TableReader streaming)
+  # the Python port wraps. Bump in lockstep with cpp release cuts.
+  PROTOWIRE_CPP_REF: v0.75.0
 
 jobs:
   # ---------------------------------------------------------------------

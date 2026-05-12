@@ -16,8 +16,8 @@ permissions:
   security-events: write
 
 env:
-  # See ci.yml for why this is a SHA, not v0.70.0.
-  PROTOWIRE_CPP_REF: 9af2ec04918a417933848de1577cd61f83a710b0
+  # See ci.yml for the rationale on this pin.
+  PROTOWIRE_CPP_REF: v0.75.0
 
 jobs:
   analyze:
