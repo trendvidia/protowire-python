@@ -11,6 +11,25 @@ format changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`pxf.TableReader` and `pxf.bind_row`** (draft §3.4.4). Streaming
+  consumption for the `@table` directive, alternative to materializing
+  every row into `Result.tables` up front. Construct via
+  `pxf.TableReader.from_bytes(data)`; iterate with the standard for
+  loop or call `next_or_none()` until it returns `None`. The reader
+  exposes the header `type` / `columns` / `directives` properties and
+  a `tail()` method that returns the unconsumed buffer for chaining a
+  second reader on multi-`@table` documents. `bind_row(msg, columns,
+  row)` is the per-row binder used by `scan()` and exposed as a
+  free function for callers iterating `Result.tables[i].rows` from
+  the materializing path. Strategy is format-and-reparse, matching
+  the C++ port: cells are rendered as a synthetic PXF body and run
+  through `unmarshal`, reusing every branch of the existing decoder
+  (WKT timestamps / durations, wrapper-nullability, enum-by-name,
+  `pxf.required` / `pxf.default`, oneof). PR-2 takes input as bytes;
+  a file-like / chunked-IO bridge is a possible follow-up.
+
 ### Changed
 
 - **CI pin to protowire-cpp v0.75.0.** The cpp sibling now ships the

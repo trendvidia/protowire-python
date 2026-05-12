@@ -8,6 +8,7 @@ objects never cross. The wrapper handles conversion on each side.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
 from typing import Literal, Union
 
@@ -261,3 +262,172 @@ def _normalize_cell(c) -> Cell:
     and stays as Python `bytes` after the round-trip.
     """
     return c  # already in the right shape
+
+
+# --- TableReader (streaming @table consumption, draft §3.4.4) ------------
+
+
+class TableReader:
+    """Streaming row reader for a single `@table` directive.
+
+    `unmarshal_full` materializes every row of a `@table` directive into
+    `Result.tables`. That works for small datasets and breaks for the
+    CSV-replacement workload `@table` was designed for. `TableReader`
+    pulls one row at a time from an in-memory buffer; working-set memory
+    is bounded by the size of the largest single row.
+
+    Usage::
+
+        reader = pxf.TableReader.from_bytes(open("trades.pxf", "rb").read())
+        for row in reader:
+            msg = TradeMsg()
+            pxf.bind_row(msg, reader.columns, row)
+            handle(msg)
+
+    Per draft §3.4.4: per-row arity and v1 cell-grammar checks happen at
+    consume time, not deferred to EOF. The reader header (everything
+    from the start of the input through the closing `)` of the column
+    list) is capped at 64 KiB to fail-fast on misuse.
+
+    NOTE: this PR-2 implementation reads from a `bytes` buffer. A
+    file-like / chunked-IO bridge is a possible follow-up.
+    """
+
+    def __init__(self, native: object) -> None:
+        # Private — construct via `from_bytes`. We keep the native handle
+        # only; type/columns/directives are forwarded on demand.
+        self._native = native
+
+    @classmethod
+    def from_bytes(cls, data: bytes | str) -> "TableReader":
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        return cls(_protowire.PxfTableReader.from_bytes(bytes(data)))
+
+    @property
+    def type(self) -> str:
+        return self._native.type
+
+    @property
+    def columns(self) -> tuple[str, ...]:
+        return tuple(self._native.columns)
+
+    @property
+    def directives(self) -> tuple[Directive, ...]:
+        return tuple(
+            Directive(
+                name=name,
+                prefixes=tuple(prefixes),
+                type=type_,
+                body=bytes(body),
+                has_body=has_body,
+                line=line,
+                column=column,
+            )
+            for (name, prefixes, type_, body, has_body, line, column) in self._native.directives
+        )
+
+    @property
+    def done(self) -> bool:
+        return self._native.done
+
+    def next_or_none(self) -> tuple[Cell, ...] | None:
+        """Returns the next row, or None at EOF."""
+        cells = self._native.next_or_none()
+        return None if cells is None else tuple(cells)
+
+    def __iter__(self) -> "TableReader":
+        return self
+
+    def __next__(self) -> tuple[Cell, ...]:
+        return tuple(self._native.__next__())
+
+    def tail(self) -> bytes:
+        """Returns the bytes the reader has buffered but not consumed,
+        followed by any remaining bytes from the underlying source.
+
+        Use to chain a second `TableReader` for documents containing
+        multiple `@table` directives::
+
+            tr1 = pxf.TableReader.from_bytes(data)
+            for _ in tr1: ...
+            tr2 = pxf.TableReader.from_bytes(tr1.tail())
+
+        MUST only be called after iteration has exhausted (i.e. `done`
+        is True). Calling earlier returns bytes the current reader
+        still intends to consume.
+        """
+        return self._native.tail()
+
+    def scan(self, msg: Message, *, skip_validate: bool = True) -> bool:
+        """Read the next row and bind its cells to `msg`'s fields by
+        column name. Returns True on success; returns False at EOF
+        (callers check `reader.done`)."""
+        cells = self.next_or_none()
+        if cells is None:
+            return False
+        bind_row(msg, self.columns, cells, skip_validate=skip_validate)
+        return True
+
+
+# --- bind_row (per-row proto binding) ------------------------------------
+
+
+def bind_row(
+    msg: Message,
+    columns: tuple[str, ...] | list[str],
+    row: tuple[Cell, ...] | list[Cell],
+    *,
+    skip_validate: bool = True,
+) -> None:
+    """Bind a `@table` row's cells to `msg`'s fields by column name.
+
+    `columns` and `row` MUST have the same length. Cell-state semantics:
+
+      - `None`        — field absent. (pxf.default) applies if declared;
+                        (pxf.required) errors if neither default nor
+                        value is present.
+      - `("null", _)` — field cleared (draft §3.9).
+      - any other     — field set to the cell's value.
+
+    Strategy: render the row as a synthetic PXF body (`<col> = <val>`
+    per non-None cell) and run it through `unmarshal`. This mirrors
+    `protowire-cpp`'s `BindRow` and reuses every branch of the existing
+    decoder — WKT timestamps / durations, wrapper-type nullability,
+    enum-by-name resolution, oneof handling — instead of growing a
+    parallel Cell→FieldDescriptor switch.
+
+    `skip_validate` defaults to True: the descriptor was validated once
+    when the caller constructed the message factory, and re-running the
+    reserved-name check per row is wasteful in tight loops.
+    """
+    if len(columns) != len(row):
+        raise ValueError(
+            f"bind_row: {len(columns)} columns vs {len(row)} cells"
+        )
+    parts: list[str] = []
+    for col, cell in zip(columns, row):
+        if cell is None:
+            continue
+        parts.append(f"{col} = {_cell_to_pxf(cell)}\n")
+    unmarshal("".join(parts), msg, skip_validate=skip_validate)
+
+
+def _cell_to_pxf(cell: tuple[CellKind, object]) -> str:
+    kind, value = cell
+    if kind == "null":
+        return "null"
+    if kind == "string":
+        # Escape `"` and `\`; other characters round-trip verbatim because
+        # the lexer accepts UTF-8 in strings.
+        s = str(value).replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{s}"'
+    if kind in ("int", "float", "timestamp", "duration"):
+        return str(value)  # raw text
+    if kind == "bool":
+        return "true" if value else "false"
+    if kind == "bytes":
+        return 'b"' + base64.b64encode(value).decode("ascii") + '"'
+    if kind == "ident":
+        return str(value)
+    raise ValueError(f"bind_row: unknown cell kind {kind!r}")
