@@ -11,6 +11,18 @@ format changes.
 
 ## [Unreleased]
 
+## [0.75.0] — 2026-05-12
+
+First release after the v0.70.0 baseline. Wraps the
+[`protowire-cpp` v0.75.0](https://github.com/trendvidia/protowire-cpp/releases/tag/v0.75.0)
+PXF v0.72-series feature set into the Python port, bringing the
+`@<name>` / `@entry` / `@table` directive grammar, schema reserved-name
+validator, `Result.directives` / `Result.tables` accessors, and the
+`TableReader` streaming row reader through the nanobind FFI. The
+Python port skips intermediate version numbers and lands the bundled
+feature set directly on v0.75.0 to match the active wire revision
+across the `protowire-*` stack.
+
 ### Added
 
 - **`pxf.TableReader` and `pxf.bind_row`** (draft §3.4.4). Streaming
