@@ -82,7 +82,7 @@ const pbuf::Descriptor* FindDescriptor(const SchemaBundle& s,
 
 // CellToPyTuple converts a single AST cell value (or std::nullopt for an
 // absent cell) into the FFI shape consumed by pxf.py — `None` for absent,
-// `(kind, value)` otherwise. Used by PxfUnmarshalFull for @table rows.
+// `(kind, value)` otherwise. Used by PxfUnmarshalFull for @dataset rows.
 //
 // kind values mirror the AST variant tags:
 //   "null"      → nb::none()
@@ -121,7 +121,7 @@ nb::object CellToPyTuple(const std::optional<protowire::pxf::ValuePtr>& cell) {
         } else if constexpr (std::is_same_v<T, DurationVal>) {
           return nb::make_tuple(std::string("duration"), p->raw);
         } else {
-          // List / Block are rejected at @table cell-parse time, so this
+          // List / Block are rejected at @dataset cell-parse time, so this
           // branch is unreachable for cells. Surface as a clean error.
           return nb::make_tuple(std::string("unknown"), nb::none());
         }
@@ -156,14 +156,19 @@ nb::bytes PxfUnmarshal(nb::bytes text, nb::bytes fds_bytes,
 // Directive FFI shape: (name, prefixes, type, body, has_body, line, column).
 using PyDirective = std::tuple<std::string, std::vector<std::string>, std::string,
                                nb::bytes, bool, int, int>;
-// TableDirective FFI shape: (type, columns, rows) where rows is a list of
+// DatasetDirective FFI shape: (type, columns, rows) where rows is a list of
 // lists of cells (each cell None or (kind, value); see CellToPyTuple).
-using PyTableDirective = std::tuple<std::string, std::vector<std::string>,
+using PyDatasetDirective = std::tuple<std::string, std::vector<std::string>,
                                     std::vector<std::vector<nb::object>>>;
+// ProtoDirective FFI shape: (shape, type_name, body) where shape is one of
+// "anonymous" / "named" / "source" / "descriptor" (draft §3.4.5).
+using PyProtoDirective = std::tuple<std::string, std::string, nb::bytes>;
 
-// PXF text -> (binary proto bytes, set_paths, null_paths, directives, tables).
+// PXF text -> (binary proto bytes, set_paths, null_paths, directives,
+// datasets, protos).
 std::tuple<nb::bytes, std::vector<std::string>, std::vector<std::string>,
-           std::vector<PyDirective>, std::vector<PyTableDirective>>
+           std::vector<PyDirective>, std::vector<PyDatasetDirective>,
+           std::vector<PyProtoDirective>>
 PxfUnmarshalFull(nb::bytes text, nb::bytes fds_bytes,
                  const std::string& full_name, bool discard_unknown,
                  bool skip_validate) {
@@ -193,10 +198,10 @@ PxfUnmarshalFull(nb::bytes text, nb::bytes fds_bytes,
         nb::bytes(d.body.data(), d.body.size()),
         d.has_body, d.pos.line, d.pos.column);
   }
-  // Marshal tables.
-  std::vector<PyTableDirective> py_tables;
-  py_tables.reserve(r->Tables().size());
-  for (const auto& t : r->Tables()) {
+  // Marshal datasets.
+  std::vector<PyDatasetDirective> py_datasets;
+  py_datasets.reserve(r->Datasets().size());
+  for (const auto& t : r->Datasets()) {
     std::vector<std::vector<nb::object>> py_rows;
     py_rows.reserve(t.rows.size());
     for (const auto& row : t.rows) {
@@ -205,13 +210,23 @@ PxfUnmarshalFull(nb::bytes text, nb::bytes fds_bytes,
       for (const auto& cell : row.cells) py_cells.push_back(CellToPyTuple(cell));
       py_rows.push_back(std::move(py_cells));
     }
-    py_tables.emplace_back(t.type, t.columns, std::move(py_rows));
+    py_datasets.emplace_back(t.type, t.columns, std::move(py_rows));
+  }
+  // Marshal protos.
+  std::vector<PyProtoDirective> py_protos;
+  py_protos.reserve(r->Protos().size());
+  for (const auto& p : r->Protos()) {
+    py_protos.emplace_back(
+        std::string(protowire::pxf::ProtoShapeName(p.shape)),
+        p.type_name,
+        nb::bytes(p.body.data(), p.body.size()));
   }
   return {nb::bytes(out.data(), out.size()),
           r->SetFields(),
           r->NullFields(),
           std::move(py_dirs),
-          std::move(py_tables)};
+          std::move(py_datasets),
+          std::move(py_protos)};
 }
 
 // PXF schema reserved-name check (draft §3.13). Returns a list of
@@ -236,21 +251,21 @@ PxfValidateDescriptor(nb::bytes fds_bytes, const std::string& full_name) {
   return out;
 }
 
-// --- PyTableReader: streaming @table consumption -------------------------
+// --- PyDatasetReader: streaming @dataset consumption -------------------------
 //
-// Wraps protowire::pxf::TableReader. The reader takes a std::istream*; we
+// Wraps protowire::pxf::DatasetReader. The reader takes a std::istream*; we
 // hold the istringstream alongside the reader so its lifetime is bound to
 // the Python object. Input is provided as bytes (PR-2 scope); a file-like
 // streambuf bridge is a possible follow-up.
-class PyTableReader {
+class PyDatasetReader {
  public:
-  static std::unique_ptr<PyTableReader> FromBytes(nb::bytes data) {
-    auto out = std::unique_ptr<PyTableReader>(new PyTableReader());
+  static std::unique_ptr<PyDatasetReader> FromBytes(nb::bytes data) {
+    auto out = std::unique_ptr<PyDatasetReader>(new PyDatasetReader());
     out->stream_ = std::make_unique<std::istringstream>(
         std::string(data.c_str(), data.size()));
-    auto tr = protowire::pxf::TableReader::Create(out->stream_.get());
+    auto tr = protowire::pxf::DatasetReader::Create(out->stream_.get());
     if (!tr.ok()) {
-      throw nb::value_error(("pxf.TableReader: " + tr.status().ToString()).c_str());
+      throw nb::value_error(("pxf.DatasetReader: " + tr.status().ToString()).c_str());
     }
     out->reader_ = std::move(*tr);
     // Marshal the side-channel directives once at construction; they're
@@ -273,10 +288,10 @@ class PyTableReader {
   // Raises ValueError on parse error.
   nb::object NextOrNone() {
     if (reader_->Done()) return nb::none();
-    protowire::pxf::TableRow row;
+    protowire::pxf::DatasetRow row;
     auto s = reader_->Next(&row);
     if (!s.ok()) {
-      throw nb::value_error(("pxf.TableReader.next: " + s.ToString()).c_str());
+      throw nb::value_error(("pxf.DatasetReader.next: " + s.ToString()).c_str());
     }
     if (reader_->Done()) return nb::none();
     return RowToList(row);
@@ -285,10 +300,10 @@ class PyTableReader {
   // Iterator protocol: __next__ raises StopIteration at EOF.
   nb::object Next() {
     if (reader_->Done()) throw nb::stop_iteration();
-    protowire::pxf::TableRow row;
+    protowire::pxf::DatasetRow row;
     auto s = reader_->Next(&row);
     if (!s.ok()) {
-      throw nb::value_error(("pxf.TableReader.next: " + s.ToString()).c_str());
+      throw nb::value_error(("pxf.DatasetReader.next: " + s.ToString()).c_str());
     }
     if (reader_->Done()) throw nb::stop_iteration();
     return RowToList(row);
@@ -296,8 +311,8 @@ class PyTableReader {
 
   // Drains the remaining buffered + underlying bytes. Only meaningful
   // after Done(); the Python wrapper exposes this as a method that
-  // returns bytes so callers can chain a second TableReader on
-  // multi-@table documents.
+  // returns bytes so callers can chain a second DatasetReader on
+  // multi-@dataset documents.
   nb::bytes Tail() {
     auto t = reader_->Tail();
     std::ostringstream buf;
@@ -307,7 +322,7 @@ class PyTableReader {
   }
 
  private:
-  static nb::object RowToList(const protowire::pxf::TableRow& row) {
+  static nb::object RowToList(const protowire::pxf::DatasetRow& row) {
     std::vector<nb::object> cells;
     cells.reserve(row.cells.size());
     for (const auto& cell : row.cells) cells.push_back(CellToPyTuple(cell));
@@ -315,7 +330,7 @@ class PyTableReader {
   }
 
   std::unique_ptr<std::istringstream> stream_;
-  std::unique_ptr<protowire::pxf::TableReader> reader_;
+  std::unique_ptr<protowire::pxf::DatasetReader> reader_;
   std::vector<PyDirective> directives_;
 };
 
@@ -502,16 +517,16 @@ NB_MODULE(_protowire, m) {
   m.def("pxf_marshal", &PxfMarshal, "msg_bytes"_a, "fds"_a, "full_name"_a);
   m.def("pxf_validate_descriptor", &PxfValidateDescriptor, "fds"_a, "full_name"_a);
 
-  nb::class_<PyTableReader>(m, "PxfTableReader")
-      .def_static("from_bytes", &PyTableReader::FromBytes, "data"_a)
-      .def_prop_ro("type", &PyTableReader::Type)
-      .def_prop_ro("columns", &PyTableReader::Columns)
-      .def_prop_ro("directives", &PyTableReader::Directives)
-      .def_prop_ro("done", &PyTableReader::Done)
-      .def("next_or_none", &PyTableReader::NextOrNone)
-      .def("tail", &PyTableReader::Tail)
-      .def("__iter__", [](PyTableReader& self) -> PyTableReader& { return self; })
-      .def("__next__", &PyTableReader::Next);
+  nb::class_<PyDatasetReader>(m, "PxfDatasetReader")
+      .def_static("from_bytes", &PyDatasetReader::FromBytes, "data"_a)
+      .def_prop_ro("type", &PyDatasetReader::Type)
+      .def_prop_ro("columns", &PyDatasetReader::Columns)
+      .def_prop_ro("directives", &PyDatasetReader::Directives)
+      .def_prop_ro("done", &PyDatasetReader::Done)
+      .def("next_or_none", &PyDatasetReader::NextOrNone)
+      .def("tail", &PyDatasetReader::Tail)
+      .def("__iter__", [](PyDatasetReader& self) -> PyDatasetReader& { return self; })
+      .def("__next__", &PyDatasetReader::Next);
 
   nb::class_<SbeCodec>(m, "SbeCodec")
       .def_static("create", &SbeCodec::Create, "fds"_a, "file_names"_a)

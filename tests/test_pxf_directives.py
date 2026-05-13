@@ -2,7 +2,7 @@
 # Copyright (c) 2026 TrendVidia, LLC.
 """Tests for the PXF v0.72+ surface exposed in v0.75.0:
 
-  - `Result.directives` and `Result.tables` populated by `unmarshal_full`
+  - `Result.directives` and `Result.datasets` populated by `unmarshal_full`
   - `pxf.validate_descriptor` and `pxf.Violation`
   - `skip_validate` opt-out on `unmarshal` / `unmarshal_full`
 """
@@ -21,7 +21,7 @@ def test_directives_empty_when_no_at_directives(all_types_cls):
     msg = all_types_cls()
     r = pxf.unmarshal_full('string_field = "x"', msg)
     assert r.directives == ()
-    assert r.tables == ()
+    assert r.datasets == ()
 
 
 def test_bare_directive_recorded(all_types_cls):
@@ -78,15 +78,15 @@ def test_at_type_does_not_leak_into_directives(all_types_cls):
     assert r.directives[0].name == "frob"
 
 
-# ---- Result.tables ------------------------------------------------------
+# ---- Result.datasets ------------------------------------------------------
 
 
 def test_table_recorded_with_columns_and_rows(all_types_cls):
     msg = all_types_cls()
-    src = "@table trades.v1.Trade ( px, qty )\n( 100, 5 )\n( 101, 7 )\n"
+    src = "@dataset trades.v1.Trade ( px, qty )\n( 100, 5 )\n( 101, 7 )\n"
     r = pxf.unmarshal_full(src, msg)
-    assert len(r.tables) == 1
-    t = r.tables[0]
+    assert len(r.datasets) == 1
+    t = r.datasets[0]
     assert t.type == "trades.v1.Trade"
     assert t.columns == ("px", "qty")
     assert len(t.rows) == 2
@@ -96,9 +96,9 @@ def test_table_recorded_with_columns_and_rows(all_types_cls):
 
 def test_table_cell_shapes(all_types_cls):
     msg = all_types_cls()
-    src = '@table x.Row ( a, b, c, d )\n( 42, "hello", true, null )\n'
+    src = '@dataset x.Row ( a, b, c, d )\n( 42, "hello", true, null )\n'
     r = pxf.unmarshal_full(src, msg)
-    row = r.tables[0].rows[0]
+    row = r.datasets[0].rows[0]
     assert row[0] == ("int", "42")
     assert row[1] == ("string", "hello")
     assert row[2] == ("bool", True)
@@ -109,8 +109,8 @@ def test_three_state_cells(all_types_cls):
     msg = all_types_cls()
     # Empty cell = None (absent); null literal = ("null", None) (present-but-null);
     # value = ("<kind>", value) (present-with-value).
-    r = pxf.unmarshal_full("@table x.Row ( a, b, c )\n( 1, , null )\n", msg)
-    row = r.tables[0].rows[0]
+    r = pxf.unmarshal_full("@dataset x.Row ( a, b, c )\n( 1, , null )\n", msg)
+    row = r.datasets[0].rows[0]
     assert row[0] == ("int", "1")
     assert row[1] is None  # absent
     assert row[2] == ("null", None)
@@ -119,23 +119,23 @@ def test_three_state_cells(all_types_cls):
 def test_multiple_tables_in_order(all_types_cls):
     msg = all_types_cls()
     src = (
-        "@table a.Row ( x )\n"
+        "@dataset a.Row ( x )\n"
         "( 1 )\n"
-        "@table b.Row ( y )\n"
+        "@dataset b.Row ( y )\n"
         '( "p" )\n'
     )
     r = pxf.unmarshal_full(src, msg)
-    assert [t.type for t in r.tables] == ["a.Row", "b.Row"]
+    assert [t.type for t in r.datasets] == ["a.Row", "b.Row"]
 
 
 def test_directives_and_tables_can_coexist(all_types_cls):
-    # A doc with @table can NOT have @type or body entries, but can carry
-    # generic @<directive>s before the @table header.
+    # A doc with @dataset can NOT have @type or body entries, but can carry
+    # generic @<directive>s before the @dataset header.
     msg = all_types_cls()
-    src = '@header pkg.Hdr { id = "h" }\n@table x.Row ( a )\n( 1 )\n'
+    src = '@header pkg.Hdr { id = "h" }\n@dataset x.Row ( a )\n( 1 )\n'
     r = pxf.unmarshal_full(src, msg)
     assert len(r.directives) == 1
-    assert len(r.tables) == 1
+    assert len(r.datasets) == 1
     assert r.directives[0].name == "header"
 
 

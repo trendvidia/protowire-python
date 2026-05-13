@@ -11,6 +11,55 @@ format changes.
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-05-13
+
+First major-version cut. Implements the three one-time spec changes
+from the [protowire v1.0 freeze line](https://github.com/trendvidia/protowire/releases/tag/v1.0.0)
+in lockstep with the other v1.0 ports, by re-pinning to
+[`protowire-cpp` v1.0.0](https://github.com/trendvidia/protowire-cpp/releases/tag/v1.0.0).
+**Breaking** — there is no alias period; v1.0 is itself the major
+bump.
+
+### Python API rename
+
+- `pxf.TableDirective` → `pxf.DatasetDirective`
+- `pxf.TableReader` → `pxf.DatasetReader`
+- `pxf.Result.tables` → `pxf.Result.datasets`
+- Tuple cell type aliases are unchanged.
+
+Source files renamed:
+
+- `tests/test_pxf_table_reader.py` → `tests/test_pxf_dataset_reader.py`
+
+### Python API additions
+
+- `pxf.ProtoDirective` (frozen dataclass with `shape`, `type_name`,
+  `body`) — exposed in `Result.protos`. The `shape` field is the
+  string literal `"anonymous" | "named" | "source" | "descriptor"`,
+  matching the cpp enum.
+- `pxf.ProtoShape` type alias for the literal union.
+
+### FFI shape
+
+`_protowire.pxf_unmarshal_full` now returns a 6-tuple (raw bytes,
+set_paths, null_paths, directives, datasets, **protos**). Python's
+`Result` gains a `protos: tuple[ProtoDirective, ...]` field.
+
+### Build
+
+- `pyproject.toml` version `0.75.0` → `1.0.0`.
+- `__version__` in `src/protowire/__init__.py` bumped accordingly.
+- Sibling-checkout dependency on `../protowire-cpp` resolves at the
+  v1.0.0 tag.
+
+### Tests
+
+- New `tests/test_pxf_proto_directive.py` with 16 cases covering all
+  four `@proto` body shapes via the FFI roundtrip, multi-`@proto`,
+  nested-brace bodies, three error paths, parametrized reserved-
+  directive-name rejection, and a `ProtoDirective` dataclass check.
+- pytest: 100 tests, 0 failures.
+
 ## [0.75.0] — 2026-05-12
 
 First release after the v0.70.0 baseline. Wraps the
