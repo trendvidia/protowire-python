@@ -17,7 +17,7 @@ permissions:
 
 env:
   # See ci.yml for the rationale on this pin.
-  PROTOWIRE_CPP_REF: v0.75.0
+  PROTOWIRE_CPP_REF: v1.0.0
 
 jobs:
   analyze:

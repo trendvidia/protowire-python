@@ -28,7 +28,7 @@ env:
   # feature set (@<name> / @entry / @table grammar, schema validator,
   # Result accessors, TableReader streaming) that this Python port
   # wraps. Bump in lockstep with cpp release cuts.
-  PROTOWIRE_CPP_REF: v0.75.0
+  PROTOWIRE_CPP_REF: v1.0.0
 
 jobs:
   # ---------------------------------------------------------------------
