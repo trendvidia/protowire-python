@@ -7,7 +7,7 @@ build-backend = "scikit_build_core.build"
 # 2021 CLI tool). The import name stays `import protowire` — these two
 # names are independent (cf. python-dateutil → import dateutil).
 name = "protowire-python"
-version = "0.75.0"
+version = "1.0.0"
 description = "Python wrapper around protowire-cpp — PXF text, SBE binary, and envelope codecs."
 readme = "README.md"
 requires-python = ">=3.10"

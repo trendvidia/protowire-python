@@ -21,7 +21,7 @@ from ._schema import fds_for_message
 # --- Directive surface (PXF v0.72+) --------------------------------------
 
 
-# A single `@table` row cell. `None` denotes an absent cell (no value between
+# A single `@dataset` row cell. `None` denotes an absent cell (no value between
 # two commas, draft §3.4.4); a non-None Cell is a (kind, value) pair where
 # kind is one of the strings below.
 #
@@ -61,17 +61,43 @@ class Directive:
 
 
 @dataclass(frozen=True)
-class TableDirective:
-    """An `@table TYPE ( cols ) row*` directive at document root.
+class DatasetDirective:
+    """An `@dataset TYPE ( cols ) row*` directive at document root.
 
-    Per draft §3.4.4 a document with any TableDirective MUST NOT have a
-    @type directive or top-level field entries — the @table header IS
+    Per draft §3.4.4 a document with any DatasetDirective MUST NOT have a
+    @type directive or top-level field entries — the @dataset header IS
     the document's type declaration.
     """
 
     type: str
     columns: tuple[str, ...]
     rows: tuple[tuple[Cell, ...], ...]
+
+
+ProtoShape = Literal["anonymous", "named", "source", "descriptor"]
+
+
+@dataclass(frozen=True)
+class ProtoDirective:
+    """An `@proto <body>` directive at document root (draft §3.4.5).
+
+    Carries an embedded protobuf schema, making the PXF document
+    self-describing. `shape` distinguishes the four lexically-determined
+    body forms; `type_name` is non-empty only when `shape == "named"`.
+    `body` carries raw bytes per shape:
+
+    - `"anonymous"` / `"named"`: bytes between the opening `{` and matching
+      `}` (both exclusive). Protobuf message-body source.
+    - `"source"`: contents of the triple-quoted string (with leading-LF
+      stripping / common-prefix dedent already applied). A complete
+      ``.proto`` source file.
+    - `"descriptor"`: base64-decoded bytes of the bytes literal. A
+      serialised ``google.protobuf.FileDescriptorSet``.
+    """
+
+    shape: ProtoShape
+    type_name: str
+    body: bytes
 
 
 @dataclass(frozen=True)
@@ -101,7 +127,8 @@ class Result:
     set_paths: frozenset[str]
     null_paths: frozenset[str]
     directives: tuple[Directive, ...] = field(default_factory=tuple)
-    tables: tuple[TableDirective, ...] = field(default_factory=tuple)
+    datasets: tuple[DatasetDirective, ...] = field(default_factory=tuple)
+    protos: tuple["ProtoDirective", ...] = field(default_factory=tuple)
 
     def is_set(self, path: str) -> bool:
         return path in self.set_paths and path not in self.null_paths
@@ -171,10 +198,10 @@ def unmarshal_full_bytes(
     skip_validate: bool = False,
 ) -> tuple[bytes, Result]:
     text = data.encode("utf-8") if isinstance(data, str) else bytes(data)
-    raw, set_paths, null_paths, dirs, tables = _protowire.pxf_unmarshal_full(
+    raw, set_paths, null_paths, dirs, tables, protos = _protowire.pxf_unmarshal_full(
         text, bytes(fds), full_name, discard_unknown, skip_validate
     )
-    return raw, _wrap_result(set_paths, null_paths, dirs, tables)
+    return raw, _wrap_result(set_paths, null_paths, dirs, tables, protos)
 
 
 # --- Decoders --------------------------------------------------------------
@@ -205,24 +232,24 @@ def unmarshal_full(
     skip_validate: bool = False,
 ) -> Result:
     """Decode PXF + return per-field presence (set/null) metadata and any
-    `@<name>` / `@table` directives the decoder saw at the document root.
+    `@<name>` / `@dataset` directives the decoder saw at the document root.
 
     Mirrors Go pxf.UnmarshalFull.
     """
     text = data.encode("utf-8") if isinstance(data, str) else bytes(data)
     fds = fds_for_message(msg)
-    raw, set_paths, null_paths, dirs, tables = _protowire.pxf_unmarshal_full(
+    raw, set_paths, null_paths, dirs, tables, protos = _protowire.pxf_unmarshal_full(
         text, fds, msg.DESCRIPTOR.full_name, discard_unknown, skip_validate
     )
     msg.Clear()
     msg.MergeFromString(raw)
-    return _wrap_result(set_paths, null_paths, dirs, tables)
+    return _wrap_result(set_paths, null_paths, dirs, tables, protos)
 
 
 # --- Internal helpers ----------------------------------------------------
 
 
-def _wrap_result(set_paths, null_paths, raw_dirs, raw_tables) -> Result:
+def _wrap_result(set_paths, null_paths, raw_dirs, raw_tables, raw_protos) -> Result:
     dirs = tuple(
         Directive(
             name=name,
@@ -236,7 +263,7 @@ def _wrap_result(set_paths, null_paths, raw_dirs, raw_tables) -> Result:
         for (name, prefixes, type_, body, has_body, line, column) in raw_dirs
     )
     tables = tuple(
-        TableDirective(
+        DatasetDirective(
             type=type_,
             columns=tuple(columns),
             rows=tuple(
@@ -245,11 +272,20 @@ def _wrap_result(set_paths, null_paths, raw_dirs, raw_tables) -> Result:
         )
         for (type_, columns, rows) in raw_tables
     )
+    protos = tuple(
+        ProtoDirective(
+            shape=shape,
+            type_name=type_name,
+            body=bytes(body),
+        )
+        for (shape, type_name, body) in raw_protos
+    )
     return Result(
         set_paths=frozenset(set_paths),
         null_paths=frozenset(null_paths),
         directives=dirs,
-        tables=tables,
+        datasets=tables,
+        protos=protos,
     )
 
 
@@ -264,21 +300,21 @@ def _normalize_cell(c) -> Cell:
     return c  # already in the right shape
 
 
-# --- TableReader (streaming @table consumption, draft §3.4.4) ------------
+# --- DatasetReader (streaming @dataset consumption, draft §3.4.4) ------------
 
 
-class TableReader:
-    """Streaming row reader for a single `@table` directive.
+class DatasetReader:
+    """Streaming row reader for a single `@dataset` directive.
 
-    `unmarshal_full` materializes every row of a `@table` directive into
+    `unmarshal_full` materializes every row of a `@dataset` directive into
     `Result.tables`. That works for small datasets and breaks for the
-    CSV-replacement workload `@table` was designed for. `TableReader`
+    CSV-replacement workload `@dataset` was designed for. `DatasetReader`
     pulls one row at a time from an in-memory buffer; working-set memory
     is bounded by the size of the largest single row.
 
     Usage::
 
-        reader = pxf.TableReader.from_bytes(open("trades.pxf", "rb").read())
+        reader = pxf.DatasetReader.from_bytes(open("trades.pxf", "rb").read())
         for row in reader:
             msg = TradeMsg()
             pxf.bind_row(msg, reader.columns, row)
@@ -299,10 +335,10 @@ class TableReader:
         self._native = native
 
     @classmethod
-    def from_bytes(cls, data: bytes | str) -> "TableReader":
+    def from_bytes(cls, data: bytes | str) -> "DatasetReader":
         if isinstance(data, str):
             data = data.encode("utf-8")
-        return cls(_protowire.PxfTableReader.from_bytes(bytes(data)))
+        return cls(_protowire.PxfDatasetReader.from_bytes(bytes(data)))
 
     @property
     def type(self) -> str:
@@ -336,7 +372,7 @@ class TableReader:
         cells = self._native.next_or_none()
         return None if cells is None else tuple(cells)
 
-    def __iter__(self) -> "TableReader":
+    def __iter__(self) -> "DatasetReader":
         return self
 
     def __next__(self) -> tuple[Cell, ...]:
@@ -346,12 +382,12 @@ class TableReader:
         """Returns the bytes the reader has buffered but not consumed,
         followed by any remaining bytes from the underlying source.
 
-        Use to chain a second `TableReader` for documents containing
-        multiple `@table` directives::
+        Use to chain a second `DatasetReader` for documents containing
+        multiple `@dataset` directives::
 
-            tr1 = pxf.TableReader.from_bytes(data)
+            tr1 = pxf.DatasetReader.from_bytes(data)
             for _ in tr1: ...
-            tr2 = pxf.TableReader.from_bytes(tr1.tail())
+            tr2 = pxf.DatasetReader.from_bytes(tr1.tail())
 
         MUST only be called after iteration has exhausted (i.e. `done`
         is True). Calling earlier returns bytes the current reader
@@ -380,7 +416,7 @@ def bind_row(
     *,
     skip_validate: bool = True,
 ) -> None:
-    """Bind a `@table` row's cells to `msg`'s fields by column name.
+    """Bind a `@dataset` row's cells to `msg`'s fields by column name.
 
     `columns` and `row` MUST have the same length. Cell-state semantics:
 
