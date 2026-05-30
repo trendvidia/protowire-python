@@ -37,7 +37,7 @@ What you thought should happen.
 
 ## Versions
 
-- `protowire` version (`pip show protowire`):
+- `protowire` version (`pip show protowire-python`):
 - Python version (`python --version`):
 - OS / arch:
 - Installed via wheel or source build (`pip install -v` last lines):
