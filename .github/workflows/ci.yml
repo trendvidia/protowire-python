@@ -37,13 +37,13 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.10", "3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Sibling protowire-cpp checkout. CMakeLists.txt looks here by
       # default (../protowire-cpp). The ref is pinned via env var above
       # so a codec change requires explicitly bumping both repos.
       - name: Checkout protowire-cpp
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: trendvidia/protowire-cpp
           ref: ${{ env.PROTOWIRE_CPP_REF }}
@@ -125,10 +125,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Checkout protowire-cpp
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: trendvidia/protowire-cpp
           ref: ${{ env.PROTOWIRE_CPP_REF }}
