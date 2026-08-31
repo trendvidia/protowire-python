@@ -54,11 +54,17 @@ jobs:
           # macOS users fall back to a source build via the published
           # sdist for now; we'll add the x86_64 wheel back via
           # universal2 (or a self-hosted runner) in a follow-up.
-          # Deployment target must match the runner: Homebrew's bottled
-          # protobuf/abseil dylibs are built for the runner's macOS
-          # version (macos-latest = 15), and delocate refuses to bundle
-          # dylibs whose min target is newer than the wheel's.
-          - os: macos-latest
+          # The runner image and macosx_deployment_target below are ONE
+          # decision, not two: Homebrew's bottled protobuf/abseil dylibs are
+          # built for the runner's macOS version, and delocate refuses to
+          # bundle dylibs whose min target is newer than the wheel's. So the
+          # runner is pinned rather than -latest. GitHub rolled macos-latest
+          # to macOS 26 in July 2026, whose bottles target 26.0, silently
+          # breaking the macOS wheel against the 15.0 target here (#18).
+          # Raising this pair sets the published wheel's macOS support floor
+          # — it drops every macOS user below the new value — so it is a
+          # release decision. Keep the two values equal.
+          - os: macos-15
             archs: "arm64"
             macosx_deployment_target: "15.0"
           - os: windows-latest
