@@ -64,10 +64,10 @@ jobs:
           - os: windows-latest
             archs: "AMD64"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Checkout protowire-cpp
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: trendvidia/protowire-cpp
           ref: ${{ env.PROTOWIRE_CPP_REF }}
@@ -152,7 +152,7 @@ jobs:
     name: sdist
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v7

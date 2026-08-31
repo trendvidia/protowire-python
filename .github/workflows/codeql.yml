@@ -30,11 +30,11 @@ jobs:
         # (the FFI shim) plus the linked protowire-cpp sources.
         language: [python, cpp]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Checkout protowire-cpp
         if: matrix.language == 'cpp'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: trendvidia/protowire-cpp
           ref: ${{ env.PROTOWIRE_CPP_REF }}
