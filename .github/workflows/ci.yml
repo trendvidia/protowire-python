@@ -123,7 +123,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # macOS is pinned, not -latest: the wheel's deployment target and
+        # the runner's Homebrew bottles must agree. See MACOSX_DEPLOYMENT_TARGET
+        # below. The test matrix above stays on macos-latest — it installs
+        # editable and never runs delocate, so it is unaffected.
+        os: [ubuntu-latest, macos-15, windows-latest]
     steps:
       - uses: actions/checkout@v7
 
@@ -159,9 +163,15 @@ jobs:
           # its default Windows repair command — once we override
           # CIBW_REPAIR_WHEEL_COMMAND_WINDOWS we have to install it.
           CIBW_BEFORE_BUILD_WINDOWS: pip install delvewheel
-          # macOS: Homebrew's bottled dylibs are built for the runner's
-          # OS (macos-latest = 15). Set the wheel's deployment target
-          # to match so delocate accepts them.
+          # macOS: Homebrew's bottled dylibs are built for the runner's OS,
+          # and delocate refuses to bundle dylibs whose min target is newer
+          # than the wheel's. So this value and the runner image are ONE
+          # decision: keep it equal to the pinned macos-15 in the matrix
+          # above. Do not switch that runner to macos-latest — GitHub rolled
+          # macos-latest to macOS 26 in July 2026, whose bottles target 26.0,
+          # which broke this job for six weeks (#18). Raising both together
+          # is a support-floor change: it drops every macOS user below the
+          # new value, so it is a release decision, not a CI tweak.
           MACOSX_DEPLOYMENT_TARGET: "15.0"
           CIBW_ENVIRONMENT_WINDOWS: >-
             CMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
