@@ -11,6 +11,14 @@ format changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/check_decode.py`**, the harness `cross_security_check.sh` looks
+  for in this port. Without it the HARDENING corpus
+  reported Python as "not run". PXF and SBE rows run through the wrapped
+  protowire-cpp decoder and PB rows through the protobuf runtime. A row the
+  harness could not run exits 2, not 1, so it cannot pass as a reject.
+  
 ### Changed
 
 - **Built against protowire-cpp v1.1.0** in CI and the wheels (#23). v1.0.0
