@@ -11,6 +11,21 @@ format changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **Built against protowire-cpp v1.1.0** in CI and the wheels (#23). v1.0.0
+  segfaulted on deeply nested PXF and read the PXF and SBE options at their
+  old numbers. `Violation.kind` gains `"key_option"`, which v1.1.0 reports.
+
+### Fixed
+
+- **`(pxf.required)` with `(pxf.default)` on one field is a bind-time
+  violation** (#22), as draft -01 now requires (protowire#453). Such a schema
+  used to bind. `unmarshal` and `unmarshal_full` raise `ValueError` unless
+  `skip_validate` is set, and `validate_descriptor` reports a
+  `"required_default"` violation, over the file and its imports.
+  `(pxf.required) = false` beside a default stays accepted.
+
 ## [1.0.0] — 2026-05-13
 
 First major-version cut. Implements the three one-time spec changes
