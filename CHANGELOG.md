@@ -11,6 +11,8 @@ format changes.
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-10-31
+
 ### Added
 
 - **`scripts/check_decode.py`**, the harness `cross_security_check.sh` looks
