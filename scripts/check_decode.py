@@ -8,7 +8,7 @@ Driven by ``protowire/scripts/cross_security_check.sh``. See
 
 Contract::
 
-    check_decode.py --format <pxf|pb|sbe|envelope> \\
+    check_decode.py --format <pxf|pb|pb-render|sbe|envelope> \\
                     --schema <fully.qualified.MessageType> \\
                     --proto  <path-to-adversarial.proto> \\
                     --input  <path>
@@ -32,6 +32,9 @@ What each format exercises:
 - pb goes through the upstream protobuf runtime. This port has no PB decoder
   of its own, so these rows test what a caller gets from
   ``Message.ParseFromString``, and a fix for one of them cannot land here.
+- pb-render reads the bytes with the protobuf runtime, then writes PXF through
+  the protowire-cpp encoder, so these rows test the producer. A read that fails
+  is not a reject of the row: the encoder never ran.
 - envelope is reported as a rejection, as in the Go reference. The corpus has
   no envelope rows.
 
@@ -93,6 +96,15 @@ def _decode_pb(fds_bytes: bytes, schema: str, data: bytes) -> int:
     return 0
 
 
+def _pb_render(fds_bytes: bytes, schema: str, data: bytes) -> int:
+    _message_class(fds_bytes, schema)().ParseFromString(data)  # Or the harness fails.
+    try:
+        pxf.marshal_bytes(data, fds_bytes, schema)
+    except ValueError as e:
+        return _reject(f"pb-render: {e}")
+    return 0
+
+
 def _decode_sbe(fds_bytes: bytes, schema: str, data: bytes) -> int:
     cls = _message_class(fds_bytes, schema)
     codec = sbe.Codec.from_message(cls)
@@ -106,13 +118,18 @@ def _decode_sbe(fds_bytes: bytes, schema: str, data: bytes) -> int:
 def _run(args: argparse.Namespace) -> int:
     if args.format == "envelope":
         return _reject("envelope decode is not implemented in this harness")
-    decode = {"pxf": _decode_pxf, "pb": _decode_pb, "sbe": _decode_sbe}[args.format]
+    decode = {
+        "pxf": _decode_pxf,
+        "pb": _decode_pb,
+        "pb-render": _pb_render,
+        "sbe": _decode_sbe,
+    }[args.format]
     return decode(_load_fds(args.proto), args.schema, Path(args.input).read_bytes())
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="check_decode")
-    p.add_argument("--format", required=True, choices=["pxf", "pb", "sbe", "envelope"])
+    p.add_argument("--format", required=True, choices=["pxf", "pb", "pb-render", "sbe", "envelope"])
     p.add_argument("--schema", required=True)
     p.add_argument("--proto", required=True)
     p.add_argument("--input", required=True)
