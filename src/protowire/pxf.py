@@ -102,15 +102,17 @@ class ProtoDirective:
 
 @dataclass(frozen=True)
 class Violation:
-    """A schema reserved-name violation, draft §3.13.
+    """A schema that must not be bound for PXF, draft -01.
 
-    Returned by `validate_descriptor`. `kind` is one of
-    `"field"` / `"oneof"` / `"enum_value"`.
+    Returned by `validate_descriptor`. `kind` is one of `"field"` / `"oneof"`
+    / `"enum_value"` (a reserved name, §3.13), `"key_option"` (a misplaced
+    `(pxf.key)`) or `"required_default"` (`(pxf.required)` and `(pxf.default)`
+    on one field).
     """
 
-    kind: Literal["field", "oneof", "enum_value"]
+    kind: Literal["field", "oneof", "enum_value", "key_option", "required_default"]
     element: str  # fully-qualified protobuf name, e.g. "trades.v1.Side.null"
-    name: str  # the bare reserved identifier ("null" / "true" / "false")
+    name: str  # the reserved identifier, the (pxf.key) value, or the field's name
     file: str  # .proto file path the element is declared in
 
 
@@ -147,9 +149,9 @@ class Result:
 
 
 def validate_descriptor(msg: Message) -> list[Violation]:
-    """Return schema reserved-name violations on `msg`'s descriptor.
+    """Return the bind-time violations of `msg`'s descriptor and its imports.
 
-    An empty list means the schema is conformant. The check is
+    An empty list means the schema is conformant. The reserved-name check is
     case-sensitive: `NULL` / `True` lex as identifiers and are accepted.
     """
     fds = fds_for_message(msg)
