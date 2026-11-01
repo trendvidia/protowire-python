@@ -11,6 +11,8 @@ format changes.
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-10-31
+
 ### Added
 
 - **`scripts/check_decode.py`**, the harness `cross_security_check.sh` looks
@@ -18,12 +20,16 @@ format changes.
   reported Python as "not run". PXF and SBE rows run through the wrapped
   protowire-cpp decoder and PB rows through the protobuf runtime. A row the
   harness could not run exits 2, not 1, so it cannot pass as a reject.
+  It also handles `pb-render`, the corpus rows that test the encoder (#28).
   
 ### Changed
 
-- **Built against protowire-cpp v1.1.0** in CI and the wheels (#23). v1.0.0
+- **Built against protowire-cpp v1.2.0** in CI and the wheels (#23). v1.0.0
   segfaulted on deeply nested PXF and read the PXF and SBE options at their
   old numbers. `Violation.kind` gains `"key_option"`, which v1.1.0 reports.
+  v1.2.0 makes `pxf.marshal` refuse a `pxf.Decimal` past the bounds, where it
+  used to hang (protowire#448), and it checks `(pxf.required)` with
+  `(pxf.default)` itself, so the bridge's copy is gone (#25).
 
 ### Fixed
 

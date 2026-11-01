@@ -18,7 +18,6 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <set>
 #include <span>
 #include <sstream>
 #include <string>
@@ -131,76 +130,12 @@ nb::object CellToPyTuple(const std::optional<protowire::pxf::ValuePtr>& cell) {
       *cell);
 }
 
-// --- (pxf.required) with (pxf.default) --------------------------------------
-//
-// Draft -01 § Required and Default forbids the pair on one field, and a tool
-// binding a descriptor must refuse it over the import closure. The pinned
-// protowire-cpp does not check this yet (protowire-cpp#50), so the bridge does,
-// using cpp's own option readers: the option numbers stay in one place. Once
-// the pin carries the upstream check, this one goes.
-
-struct RequiredWithDefault {
-  std::string file;
-  std::string element;  // fully-qualified field name
-  std::string name;     // bare field name
-};
-
-void WalkRequiredWithDefault(const pbuf::Descriptor* md,
-                             std::vector<RequiredWithDefault>* out) {
-  for (int i = 0; i < md->field_count(); ++i) {
-    const pbuf::FieldDescriptor* f = md->field(i);
-    if (protowire::pxf::IsRequired(f) && protowire::pxf::GetDefault(f).has_value()) {
-      out->push_back({std::string(md->file()->name()), std::string(f->full_name()),
-                      std::string(f->name())});
-    }
-  }
-  for (int i = 0; i < md->nested_type_count(); ++i) {
-    WalkRequiredWithDefault(md->nested_type(i), out);
-  }
-}
-
-void WalkRequiredWithDefault(const pbuf::FileDescriptor* fd,
-                             std::set<const pbuf::FileDescriptor*>* seen,
-                             std::vector<RequiredWithDefault>* out) {
-  if (!seen->insert(fd).second) return;
-  for (int i = 0; i < fd->message_type_count(); ++i) {
-    WalkRequiredWithDefault(fd->message_type(i), out);
-  }
-  for (int i = 0; i < fd->dependency_count(); ++i) {
-    WalkRequiredWithDefault(fd->dependency(i), seen, out);
-  }
-}
-
-std::vector<RequiredWithDefault> FindRequiredWithDefault(const pbuf::Descriptor* desc) {
-  std::set<const pbuf::FileDescriptor*> seen;
-  std::vector<RequiredWithDefault> out;
-  WalkRequiredWithDefault(desc->file(), &seen, &out);
-  return out;
-}
-
-// Raises when the schema carries the pair; `op` prefixes the error as the
-// decoder's own errors are prefixed. Honors skip_validate through its callers,
-// like cpp's CheckSchema.
-void CheckRequiredWithDefault(const pbuf::Descriptor* desc, const std::string& op) {
-  auto found = FindRequiredWithDefault(desc);
-  if (found.empty()) return;
-  std::string m = op + ": PXF schema violations:";
-  for (const auto& v : found) {
-    m += "\n  " + v.file + ": field \"" + v.element +
-         "\": (pxf.required) and (pxf.default) are exclusive on one field: the first rejects "
-         "a document where the field is absent, and the second treats it as supplied "
-         "(draft -01 §Required and Default)";
-  }
-  throw nb::value_error(m.c_str());
-}
-
 // PXF text -> binary proto bytes.
 nb::bytes PxfUnmarshal(nb::bytes text, nb::bytes fds_bytes,
                        const std::string& full_name, bool discard_unknown,
                        bool skip_validate) {
   auto schema = BuildSchema(std::string_view(fds_bytes.c_str(), fds_bytes.size()));
   const auto* desc = FindDescriptor(schema, full_name);
-  if (!skip_validate) CheckRequiredWithDefault(desc, "pxf.unmarshal");
   std::unique_ptr<pbuf::Message> msg(
       schema.factory->GetPrototype(desc)->New());
 
@@ -240,7 +175,6 @@ PxfUnmarshalFull(nb::bytes text, nb::bytes fds_bytes,
                  bool skip_validate) {
   auto schema = BuildSchema(std::string_view(fds_bytes.c_str(), fds_bytes.size()));
   const auto* desc = FindDescriptor(schema, full_name);
-  if (!skip_validate) CheckRequiredWithDefault(desc, "pxf.unmarshal_full");
   std::unique_ptr<pbuf::Message> msg(
       schema.factory->GetPrototype(desc)->New());
 
@@ -309,16 +243,18 @@ PxfValidateDescriptor(nb::bytes fds_bytes, const std::string& full_name) {
   out.reserve(vs.size());
   for (const auto& v : vs) {
     std::string kind;
+    std::string name = v.name;
     switch (v.kind) {
       case protowire::pxf::ViolationKind::kField:     kind = "field";      break;
       case protowire::pxf::ViolationKind::kOneof:     kind = "oneof";      break;
       case protowire::pxf::ViolationKind::kEnumValue: kind = "enum_value"; break;
       case protowire::pxf::ViolationKind::kKeyOption: kind = "key_option"; break;
+      case protowire::pxf::ViolationKind::kRequiredOption:
+        kind = "required_default";
+        name = v.element.substr(v.element.rfind('.') + 1);  // cpp leaves name empty here.
+        break;
     }
-    out.emplace_back(std::move(kind), v.element, v.name, v.file);
-  }
-  for (const auto& v : FindRequiredWithDefault(desc)) {
-    out.emplace_back("required_default", v.element, v.name, v.file);
+    out.emplace_back(std::move(kind), v.element, std::move(name), v.file);
   }
   return out;
 }
