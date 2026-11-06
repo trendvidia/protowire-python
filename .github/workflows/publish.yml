@@ -24,11 +24,9 @@ env:
   # frozen FFI surface, so it must be an immutable ref — never a
   # branch.
   #
-  # Pinned to a tagged C++ release. v0.75.0 ships the PXF v0.72-series
-  # feature set (@<name> / @entry / @table grammar, schema validator,
-  # Result accessors, TableReader streaming) that this Python port
-  # wraps. Bump in lockstep with cpp release cuts.
-  PROTOWIRE_CPP_REF: v1.2.0
+  # Pinned to a tagged C++ release: wheels are built from this ref, so it
+  # must never be a branch. Bump in lockstep with cpp release cuts.
+  PROTOWIRE_CPP_REF: v2.0.0
 
 jobs:
   # ---------------------------------------------------------------------

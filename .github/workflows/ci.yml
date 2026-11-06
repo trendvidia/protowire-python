@@ -16,11 +16,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Pin the sibling C++ checkout to a specific tag. v0.75.0 carries the
-  # PXF v0.72-series feature set (@<name> / @entry / @table directive
-  # grammar, schema validator, Result accessors, TableReader streaming)
-  # the Python port wraps. Bump in lockstep with cpp release cuts.
-  PROTOWIRE_CPP_REF: v1.2.0
+  # Pin the sibling C++ checkout to a tagged protowire-cpp release. Python
+  # decodes and encodes PXF and SBE through it, so a spec fix reaches this
+  # port only when the pin moves. Bump in lockstep with cpp release cuts.
+  PROTOWIRE_CPP_REF: v2.0.0
 
 jobs:
   # ---------------------------------------------------------------------

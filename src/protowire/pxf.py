@@ -106,13 +106,29 @@ class Violation:
 
     Returned by `validate_descriptor`. `kind` is one of `"field"` / `"oneof"`
     / `"enum_value"` (a reserved name, §3.13), `"key_option"` (a misplaced
-    `(pxf.key)`) or `"required_default"` (`(pxf.required)` and `(pxf.default)`
-    on one field).
+    `(pxf.key)`), `"required_default"` (a misplaced `(pxf.required)`: beside
+    `(pxf.default)` on one field, or on a oneof member), `"default_option"` (a
+    default that cannot be used, such as one on a repeated field),
+    `"retired_number"` (an option at an extension number protowire retired;
+    recompile the descriptor) or `"well_known_shape"` (a message redefining a
+    well-known type without the fields the codec reads).
     """
 
-    kind: Literal["field", "oneof", "enum_value", "key_option", "required_default"]
+    kind: Literal[
+        "field",
+        "oneof",
+        "enum_value",
+        "key_option",
+        "required_default",
+        "default_option",
+        "retired_number",
+        "well_known_shape",
+    ]
     element: str  # fully-qualified protobuf name, e.g. "trades.v1.Side.null"
-    name: str  # the reserved identifier, the (pxf.key) value, or the field's name
+    # The reserved identifier, the (pxf.key) value, the field's name
+    # ("required_default"), the (pxf.default) literal ("default_option"), or
+    # the retired number ("retired_number"); empty for "well_known_shape".
+    name: str
     file: str  # .proto file path the element is declared in
 
 
@@ -456,9 +472,10 @@ def _cell_to_pxf(cell: tuple[CellKind, object]) -> str:
     if kind == "null":
         return "null"
     if kind == "string":
-        # Escape `"` and `\`; other characters round-trip verbatim because
-        # the lexer accepts UTF-8 in strings.
-        s = str(value).replace("\\", "\\\\").replace('"', '\\"')
+        # Escape `\`, `"` and the line feed, which the lexer rejects raw in a
+        # string (protowire#350); protowire-cpp's BindRow writes it as `\n`
+        # too. Other characters round-trip verbatim.
+        s = str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
         return f'"{s}"'
     if kind in ("int", "float", "timestamp", "duration"):
         return str(value)  # raw text
