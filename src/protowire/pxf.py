@@ -125,9 +125,10 @@ class Violation:
         "well_known_shape",
     ]
     element: str  # fully-qualified protobuf name, e.g. "trades.v1.Side.null"
-    # The reserved identifier, the (pxf.key) value, the field's name
-    # ("required_default"), the (pxf.default) literal ("default_option"), or
-    # the retired number ("retired_number"); empty for "well_known_shape".
+    # The reserved identifier, the (pxf.key) value, the (pxf.default) literal
+    # ("default_option", and "required_default" beside a default), the oneof's
+    # name ("required_default" on a oneof member), or the retired number
+    # ("retired_number"); empty for "well_known_shape".
     name: str
     file: str  # .proto file path the element is declared in
 
