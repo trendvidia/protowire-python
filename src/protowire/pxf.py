@@ -178,18 +178,34 @@ def validate_descriptor(msg: Message) -> list[Violation]:
 # --- Encoders --------------------------------------------------------------
 
 
-def marshal(msg: Message) -> str:
-    """Encode `msg` as PXF text. Mirrors Go pxf.Marshal."""
+def marshal(msg: Message, *, max_nesting_depth: int = 0) -> str:
+    """Encode `msg` as PXF text. Mirrors Go pxf.Marshal.
+
+    A message nested deeper than `max_nesting_depth` raises ValueError rather
+    than being written, because a decoder at the same limit would refuse the
+    output (protowire#502). Depth is counted as a decoder counts it: the root
+    is depth 0, and every `{` or `[` is one more. 0 selects the default, 100.
+    Raise it only together with the limit of every reader of the output.
+    """
     fds = fds_for_message(msg)
-    return _protowire.pxf_marshal(msg.SerializeToString(), fds, msg.DESCRIPTOR.full_name)
+    return _protowire.pxf_marshal(
+        msg.SerializeToString(), fds, msg.DESCRIPTOR.full_name, max_nesting_depth
+    )
 
 
 # --- bytes-only helpers (used by the CLI / advanced callers) -------------
 
 
-def marshal_bytes(msg_bytes: bytes, fds: bytes, full_name: str) -> str:
-    """Encode raw proto-binary bytes (against an explicit FDS) as PXF text."""
-    return _protowire.pxf_marshal(bytes(msg_bytes), bytes(fds), full_name)
+def marshal_bytes(
+    msg_bytes: bytes, fds: bytes, full_name: str, *, max_nesting_depth: int = 0
+) -> str:
+    """Encode raw proto-binary bytes (against an explicit FDS) as PXF text.
+
+    `max_nesting_depth` is as for `marshal`. Bytes that do not parse as
+    `full_name`, or nest more than one level past the limit, raise a
+    ValueError starting "pxf.marshal: proto parse failed".
+    """
+    return _protowire.pxf_marshal(bytes(msg_bytes), bytes(fds), full_name, max_nesting_depth)
 
 
 def unmarshal_bytes(
