@@ -255,7 +255,6 @@ PxfValidateDescriptor(nb::bytes fds_bytes, const std::string& full_name) {
       case protowire::pxf::ViolationKind::kKeyOption: kind = "key_option"; break;
       case protowire::pxf::ViolationKind::kRequiredOption:
         kind = "required_default";
-        name = v.element.substr(v.element.rfind('.') + 1);  // cpp leaves name empty here.
         break;
       case protowire::pxf::ViolationKind::kDefaultOption:  kind = "default_option";   break;
       case protowire::pxf::ViolationKind::kRetiredNumber:  kind = "retired_number";   break;

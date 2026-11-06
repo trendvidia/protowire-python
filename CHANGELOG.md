@@ -42,6 +42,12 @@ format changes.
     target's, and a oneof field.
   - **Error text** matches protowire-go's. Text a caller matched on changes.
 
+- **`Violation.name` for `(pxf.required)` with `(pxf.default)` on one field is
+  the default's literal** (#30, trendvidia/protowire-go#211). It was the bare
+  field name, which `element` already holds. An empty default gives an empty
+  `name`. This matches the other ports. For `(pxf.required)` on a oneof member,
+  `name` is the oneof's name, as protowire-cpp reports it.
+
 ### Added
 
 - **`Violation.kind` values `"default_option"`, `"retired_number"` and
