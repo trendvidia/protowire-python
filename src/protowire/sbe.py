@@ -73,9 +73,23 @@ class GroupView:
 
 
 class Codec:
-    """SBE codec built from one or more proto FileDescriptors with SBE annotations."""
+    """SBE codec built from one or more proto FileDescriptors with SBE annotations.
 
-    def __init__(self, files: Iterable[FileDescriptor]) -> None:
+    The codec's decoders (`unmarshal` and `view`) enforce two limits of
+    HARDENING.md § Mandatory limits, set here for every call, as
+    protowire-cpp's sbe::CodecOptions sets them. `max_message_size` caps the
+    input to one call (default 64 MiB). `max_repeated_count` caps a group's
+    entry count, checked before any entry is read (default 64 Mi). 0 selects
+    the default; a negative value is a ValueError.
+    """
+
+    def __init__(
+        self,
+        files: Iterable[FileDescriptor],
+        *,
+        max_message_size: int = 0,
+        max_repeated_count: int = 0,
+    ) -> None:
         files = list(files)
         if not files:
             raise ValueError("sbe.Codec requires at least one FileDescriptor")
@@ -83,11 +97,23 @@ class Codec:
         # Pass the *selected* file names so the C++ Codec only registers those
         # — transitive dep files (descriptor.proto, sbe/annotations.proto)
         # don't carry an (sbe.schema_id) option and would otherwise fail.
-        self._impl = _protowire.SbeCodec.create(fds, [f.name for f in files])
+        self._impl = _protowire.SbeCodec.create(
+            fds, [f.name for f in files], max_message_size, max_repeated_count
+        )
 
     @classmethod
-    def from_message(cls, msg_type: type[Message]) -> "Codec":
-        return cls([msg_type.DESCRIPTOR.file])
+    def from_message(
+        cls,
+        msg_type: type[Message],
+        *,
+        max_message_size: int = 0,
+        max_repeated_count: int = 0,
+    ) -> "Codec":
+        return cls(
+            [msg_type.DESCRIPTOR.file],
+            max_message_size=max_message_size,
+            max_repeated_count=max_repeated_count,
+        )
 
     def marshal(self, msg: Message) -> bytes:
         return self._impl.marshal(msg.SerializeToString(), msg.DESCRIPTOR.full_name)
