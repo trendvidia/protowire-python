@@ -74,7 +74,7 @@ def _one_field(options: bytes):
     return _bind(fd)
 
 
-def _assert_refused(fds: bytes, cls, element: str, file: str) -> None:
+def _assert_refused(fds: bytes, cls, element: str, file: str, name: str = "x") -> None:
     # A document supplying the field: the schema is wrong whatever the input.
     doc = 'f = "y"\n' if cls.DESCRIPTOR.fields_by_name.get("f") else ""
     for call in (
@@ -91,7 +91,7 @@ def _assert_refused(fds: bytes, cls, element: str, file: str) -> None:
         pxf.Violation(
             kind="required_default",
             element=element,
-            name=element.rsplit(".", 1)[1],
+            name=name,  # The (pxf.default) literal (protowire-go#211).
             file=file,
         )
     ]
@@ -100,6 +100,11 @@ def _assert_refused(fds: bytes, cls, element: str, file: str) -> None:
 def test_required_with_default_is_refused_at_bind():
     fds, cls = _one_field(REQUIRED + DEFAULT)
     _assert_refused(fds, cls, "t.M.f", "one.proto")
+
+
+def test_empty_default_gives_an_empty_name():
+    fds, cls = _one_field(REQUIRED + _opt_str(_DEFAULT, ""))
+    _assert_refused(fds, cls, "t.M.f", "one.proto", name="")
 
 
 def test_option_order_does_not_matter():
@@ -151,3 +156,19 @@ def test_misplaced_key_option_is_reported_with_its_kind():
     _add_field(fd.message_type.add(name="M"), "f", 1, _opt_str(_KEY, "id"))
     _, cls = _bind(fd)
     assert [v.kind for v in pxf.validate_descriptor(cls())] == ["key_option"]
+
+
+def test_required_on_a_oneof_member_names_the_oneof():
+    # protowire-cpp v2.0.0 reports this under the same kind, with the oneof's
+    # name in `name` ("Oneof Members").
+    fd = _file("oneof.proto")
+    m = fd.message_type.add(name="M")
+    m.oneof_decl.add(name="pick")
+    _add_field(m, "a", 1, REQUIRED)
+    _add_field(m, "b", 2)
+    for f in m.field:
+        f.oneof_index = 0
+    _, cls = _bind(fd)
+    assert pxf.validate_descriptor(cls()) == [
+        pxf.Violation(kind="required_default", element="t.M.a", name="pick", file="oneof.proto")
+    ]
