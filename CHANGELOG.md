@@ -53,12 +53,27 @@ format changes.
 - **`Violation.kind` values `"default_option"`, `"retired_number"` and
   `"well_known_shape"`,** for the bind-time checks above. They came back as
   `""`.
+- **`max_nesting_depth` on `pxf.marshal` and `pxf.marshal_bytes`** (#34,
+  protowire#502), the deepest PXF they write, counted as a decoder counts it.
+  0, the default, means 100. Raise it only together with the limit of every
+  reader of the output. A negative value is a `ValueError`.
 
 ### Fixed
 
 - **`bind_row` and `DatasetReader.scan` escape a line feed in a string
   cell.** On protowire-cpp v2.0.0 a cell holding one failed with `newline in
   string literal`.
+- **`pxf.marshal` refuses a message nested one level too deep with the
+  encoder's error,** `nesting depth exceeds MaxNestingDepth=100`. It failed
+  earlier, with `proto parse failed`, because the bridge read the message back
+  at protobuf's own limit before the encoder ran. A message two or more levels
+  too deep still fails in that read, and its error now names the depth. A
+  Timestamp or other literal at the limit is written: it is one protobuf
+  level but no PXF level. Reading such a document back fails in upb (#40).
+- **`scripts/check_decode.py --format pb-render` no longer reads the input
+  with the stock protobuf reader first.** That reader stops at 100 levels, so
+  the corpus's 101-level rows never reached the encoder. A read that fails
+  still exits 2.
 
 ## [1.1.0] — 2026-10-31
 

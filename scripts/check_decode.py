@@ -32,9 +32,10 @@ What each format exercises:
 - pb goes through the upstream protobuf runtime. This port has no PB decoder
   of its own, so these rows test what a caller gets from
   ``Message.ParseFromString``, and a fix for one of them cannot land here.
-- pb-render reads the bytes with the protobuf runtime, then writes PXF through
-  the protowire-cpp encoder, so these rows test the producer. A read that fails
-  is not a reject of the row: the encoder never ran.
+- pb-render writes the bytes as PXF through ``pxf.marshal_bytes``, so these
+  rows test the protowire-cpp encoder. The bridge reads the bytes one level
+  deeper than the encoder's limit, leaving the encoder to refuse. A read that
+  fails is not a reject of the row: the encoder never ran.
 - envelope is reported as a rejection, as in the Go reference. The corpus has
   no envelope rows.
 
@@ -96,11 +97,19 @@ def _decode_pb(fds_bytes: bytes, schema: str, data: bytes) -> int:
     return 0
 
 
+# What marshal_bytes raises when it cannot read the bytes. The stock protobuf
+# reader is not used first: it stops at 100 levels, and the 101-level rows test
+# that the encoder refuses them (protowire#502).
+_PB_READ_FAILED = "pxf.marshal: proto parse failed"
+
+
 def _pb_render(fds_bytes: bytes, schema: str, data: bytes) -> int:
-    _message_class(fds_bytes, schema)().ParseFromString(data)  # Or the harness fails.
+    _message_class(fds_bytes, schema)  # Or the harness fails.
     try:
         pxf.marshal_bytes(data, fds_bytes, schema)
     except ValueError as e:
+        if str(e).startswith(_PB_READ_FAILED):
+            raise  # The encoder never ran: exit 2, not a reject.
         return _reject(f"pb-render: {e}")
     return 0
 

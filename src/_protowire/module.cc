@@ -29,8 +29,10 @@
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/descriptor.pb.h>
 #include <google/protobuf/dynamic_message.h>
+#include <google/protobuf/io/coded_stream.h>
 #include <google/protobuf/message.h>
 
+#include "protowire/limits.h"
 #include "protowire/pxf.h"
 #include "protowire/pxf/annotations.h"
 #include "protowire/sbe.h"
@@ -346,18 +348,35 @@ class PyDatasetReader {
   std::vector<PyDirective> directives_;
 };
 
-// Binary proto bytes -> PXF text.
+// Binary proto bytes -> PXF text. max_nesting_depth is
+// pxf::MarshalOptions::max_nesting_depth; 0 selects kMaxNestingDepth.
 std::string PxfMarshal(nb::bytes msg_bytes, nb::bytes fds_bytes,
-                       const std::string& full_name) {
+                       const std::string& full_name, int max_nesting_depth) {
+  if (max_nesting_depth < 0) {
+    throw nb::value_error("pxf.marshal: max_nesting_depth must not be negative");
+  }
   auto schema = BuildSchema(std::string_view(fds_bytes.c_str(), fds_bytes.size()));
   const auto* desc = FindDescriptor(schema, full_name);
   std::unique_ptr<pbuf::Message> msg(
       schema.factory->GetPrototype(desc)->New());
-  if (!msg->ParseFromArray(msg_bytes.c_str(),
-                           static_cast<int>(msg_bytes.size()))) {
-    throw nb::value_error("pxf.marshal: proto parse failed");
+  // The encoder decides how deep is too deep (protowire#502), so the parse
+  // must not refuse first. Every submessage is a PXF block except a literal
+  // (Timestamp, Duration, a wrapper, Secret, a big number), and those have no
+  // submessages, so the bytes nest at most one level deeper than the PXF.
+  const int depth = max_nesting_depth > 0 ? max_nesting_depth : protowire::kMaxNestingDepth;
+  pbuf::io::CodedInputStream in(reinterpret_cast<const uint8_t*>(msg_bytes.c_str()),
+                                static_cast<int>(msg_bytes.size()));
+  in.SetRecursionLimit(depth + 1);
+  if (!msg->ParseFromCodedStream(&in) || !in.ConsumedEntireMessage()) {
+    // Reading deeper would risk the stack on untrusted bytes, and this cannot
+    // tell a malformed message from one nested too deep, so it names both.
+    throw nb::value_error(("pxf.marshal: proto parse failed: the bytes do not parse as " + full_name +
+                           ", or they nest past max_nesting_depth=" + std::to_string(depth))
+                              .c_str());
   }
-  auto out = protowire::pxf::Marshal(*msg);
+  protowire::pxf::MarshalOptions opts;
+  opts.max_nesting_depth = max_nesting_depth;
+  auto out = protowire::pxf::Marshal(*msg, opts);
   if (!out.ok()) {
     throw nb::value_error(("pxf.marshal: " + out.status().ToString()).c_str());
   }
@@ -526,7 +545,8 @@ NB_MODULE(_protowire, m) {
         "discard_unknown"_a = false, "skip_validate"_a = false);
   m.def("pxf_unmarshal_full", &PxfUnmarshalFull, "text"_a, "fds"_a,
         "full_name"_a, "discard_unknown"_a = false, "skip_validate"_a = false);
-  m.def("pxf_marshal", &PxfMarshal, "msg_bytes"_a, "fds"_a, "full_name"_a);
+  m.def("pxf_marshal", &PxfMarshal, "msg_bytes"_a, "fds"_a, "full_name"_a,
+        "max_nesting_depth"_a = 0);
   m.def("pxf_validate_descriptor", &PxfValidateDescriptor, "fds"_a, "full_name"_a);
 
   nb::class_<PyDatasetReader>(m, "PxfDatasetReader")
