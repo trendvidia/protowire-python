@@ -53,6 +53,22 @@ format changes.
 - **`Violation.kind` values `"default_option"`, `"retired_number"` and
   `"well_known_shape"`,** for the bind-time checks above. They came back as
   `""`.
+- **Per-call decode limits** (#36), the six of HARDENING.md § Mandatory
+  limits, as keyword arguments on `pxf.unmarshal`, `unmarshal_full`, their
+  `_bytes` forms, `bind_row` and `DatasetReader.from_bytes`:
+  `max_message_size`, `max_nesting_depth`, `max_numeric_literal_digits`,
+  `max_bytes_literal_length`, `max_repeated_count` and
+  `max_big_float_exponent`. 0, the default, keeps protowire-cpp's limit; a
+  negative value is a `ValueError`. `sbe.Codec` and `Codec.from_message` take
+  `max_message_size` and `max_repeated_count` for every call, as
+  protowire-cpp's `sbe::CodecOptions` does. `DatasetReader.scan` binds each
+  row under the reader's limits. Two caveats: the decoded message still loads
+  through the protobuf runtime, which stops at 100 levels of submessages (#40),
+  and the reader parses rows under the default `max_bytes_literal_length`
+  until protowire-cpp#160 is fixed (`scan` still applies it when binding).
+- **`scripts/check_decode.py --limit Name=N`**, so the corpus rows that lower
+  a limit run on this port. pb rows take none: the protobuf runtime has no
+  such settings, and such a row exits 2.
 - **`max_nesting_depth` on `pxf.marshal` and `pxf.marshal_bytes`** (#34,
   protowire#502), the deepest PXF they write, counted as a decoder counts it.
   0, the default, means 100. Raise it only together with the limit of every

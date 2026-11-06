@@ -11,7 +11,8 @@ Contract::
     check_decode.py --format <pxf|pb|pb-render|sbe|envelope> \\
                     --schema <fully.qualified.MessageType> \\
                     --proto  <path-to-adversarial.proto> \\
-                    --input  <path>
+                    --input  <path> \\
+                    [--limit <Name>=<N> ...]
 
     Exit 0 -> input was accepted (decode succeeded)
     Exit 1 -> input was rejected (decode returned a clean error; the first
@@ -42,8 +43,14 @@ What each format exercises:
 Schemas come from the ``adversarial.binpb`` FileDescriptorSet next to
 ``--proto``, since the Python runtime cannot compile a .proto. The corpus
 generator writes both, so there are no hand-written bindings to keep in step
-with the corpus. ``--limit`` is not implemented: rows that need it list
-"python" in their manifest "skip".
+with the corpus.
+
+``--limit MaxMessageSize=1024`` sets one HARDENING limit for the row, under
+the Go name the manifest uses. pxf rows take all six, sbe rows
+MaxMessageSize and MaxRepeatedCount, and pb-render MaxNestingDepth. A limit
+this port cannot apply to the row's format exits 2: running the row without
+it would not test the limit. pb rows take none, since the protobuf runtime
+has no such settings.
 """
 
 from __future__ import annotations
@@ -79,16 +86,47 @@ def _message_class(fds_bytes: bytes, schema: str):
     return message_factory.GetMessageClass(pool.FindMessageTypeByName(schema))
 
 
-def _decode_pxf(fds_bytes: bytes, schema: str, data: bytes) -> int:
+# --limit names, as the manifest spells them, and the keywords they set.
+_LIMITS = {
+    "MaxMessageSize": "max_message_size",
+    "MaxNestingDepth": "max_nesting_depth",
+    "MaxNumericLiteralDigits": "max_numeric_literal_digits",
+    "MaxBytesLiteralLength": "max_bytes_literal_length",
+    "MaxRepeatedCount": "max_repeated_count",
+    "MaxBigFloatExponent": "max_big_float_exponent",
+}
+# The limits each format can apply. pb has none: see the module docstring.
+_FORMAT_LIMITS = {
+    "pxf": set(_LIMITS.values()),
+    "sbe": {"max_message_size", "max_repeated_count"},
+    "pb-render": {"max_nesting_depth"},
+    "pb": set(),
+    "envelope": set(),
+}
+
+
+def _parse_limits(fmt: str, specs: list[str]) -> dict[str, int]:
+    out = {}
+    for spec in specs:
+        name, _, value = spec.partition("=")
+        if name not in _LIMITS:
+            raise SystemExit(f"check_decode: unknown limit {name!r}")
+        if _LIMITS[name] not in _FORMAT_LIMITS[fmt]:
+            raise SystemExit(f"check_decode: --limit {name} is not supported for {fmt}")
+        out[_LIMITS[name]] = int(value)
+    return out
+
+
+def _decode_pxf(fds_bytes: bytes, schema: str, data: bytes, limits: dict[str, int]) -> int:
     pxf.unmarshal_bytes(b"", fds_bytes, schema)  # Binds, or the harness fails.
     try:
-        pxf.unmarshal_bytes(data, fds_bytes, schema)
+        pxf.unmarshal_bytes(data, fds_bytes, schema, **limits)
     except ValueError as e:
         return _reject(f"pxf: {e}")
     return 0
 
 
-def _decode_pb(fds_bytes: bytes, schema: str, data: bytes) -> int:
+def _decode_pb(fds_bytes: bytes, schema: str, data: bytes, limits: dict[str, int]) -> int:
     msg = _message_class(fds_bytes, schema)()
     try:
         msg.ParseFromString(data)
@@ -103,10 +141,10 @@ def _decode_pb(fds_bytes: bytes, schema: str, data: bytes) -> int:
 _PB_READ_FAILED = "pxf.marshal: proto parse failed"
 
 
-def _pb_render(fds_bytes: bytes, schema: str, data: bytes) -> int:
+def _pb_render(fds_bytes: bytes, schema: str, data: bytes, limits: dict[str, int]) -> int:
     _message_class(fds_bytes, schema)  # Or the harness fails.
     try:
-        pxf.marshal_bytes(data, fds_bytes, schema)
+        pxf.marshal_bytes(data, fds_bytes, schema, **limits)
     except ValueError as e:
         if str(e).startswith(_PB_READ_FAILED):
             raise  # The encoder never ran: exit 2, not a reject.
@@ -114,9 +152,9 @@ def _pb_render(fds_bytes: bytes, schema: str, data: bytes) -> int:
     return 0
 
 
-def _decode_sbe(fds_bytes: bytes, schema: str, data: bytes) -> int:
+def _decode_sbe(fds_bytes: bytes, schema: str, data: bytes, limits: dict[str, int]) -> int:
     cls = _message_class(fds_bytes, schema)
-    codec = sbe.Codec.from_message(cls)
+    codec = sbe.Codec.from_message(cls, **limits)
     try:
         codec.unmarshal(data, cls())
     except ValueError as e:
@@ -133,7 +171,8 @@ def _run(args: argparse.Namespace) -> int:
         "pb-render": _pb_render,
         "sbe": _decode_sbe,
     }[args.format]
-    return decode(_load_fds(args.proto), args.schema, Path(args.input).read_bytes())
+    limits = _parse_limits(args.format, args.limit)
+    return decode(_load_fds(args.proto), args.schema, Path(args.input).read_bytes(), limits)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -142,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--schema", required=True)
     p.add_argument("--proto", required=True)
     p.add_argument("--input", required=True)
+    p.add_argument("--limit", action="append", default=[], metavar="NAME=N")
     args = p.parse_args(argv)
     try:
         return _run(args)

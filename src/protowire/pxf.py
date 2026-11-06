@@ -194,6 +194,38 @@ def marshal(msg: Message, *, max_nesting_depth: int = 0) -> str:
     )
 
 
+# --- Decode limits ----------------------------------------------------------
+#
+# Every decoder takes the limits of HARDENING.md § Mandatory limits as keyword
+# arguments, passed to protowire-cpp's pxf::UnmarshalOptions. 0 selects the
+# default; a negative value is a ValueError.
+#
+#   max_message_size            input length in bytes (default 64 MiB)
+#   max_nesting_depth           `{` / `[` nesting, the root is depth 0 (100)
+#   max_numeric_literal_digits  digits of a literal bound to pxf.BigInt,
+#                               Decimal or BigFloat, and a Decimal's scale (4096)
+#   max_bytes_literal_length    decoded length of a b"..." literal (64 MiB)
+#   max_repeated_count          elements of one repeated or map field (64 Mi)
+#   max_big_float_exponent      a pxf.BigFloat's binary exponent (16384)
+#
+# The decoded message reaches Python through the protobuf runtime, which stops
+# at 100 levels of submessages whatever max_nesting_depth says (#40).
+
+
+def _limits(
+    max_message_size: int,
+    max_nesting_depth: int,
+    max_numeric_literal_digits: int,
+    max_bytes_literal_length: int,
+    max_repeated_count: int,
+    max_big_float_exponent: int,
+) -> tuple[int, int, int, int, int, int]:
+    return (
+        max_message_size, max_nesting_depth, max_numeric_literal_digits,
+        max_bytes_literal_length, max_repeated_count, max_big_float_exponent,
+    )
+
+
 # --- bytes-only helpers (used by the CLI / advanced callers) -------------
 
 
@@ -216,11 +248,24 @@ def unmarshal_bytes(
     *,
     discard_unknown: bool = False,
     skip_validate: bool = False,
+    max_message_size: int = 0,
+    max_nesting_depth: int = 0,
+    max_numeric_literal_digits: int = 0,
+    max_bytes_literal_length: int = 0,
+    max_repeated_count: int = 0,
+    max_big_float_exponent: int = 0,
 ) -> bytes:
-    """Decode PXF text into raw proto-binary bytes against an explicit FDS."""
+    """Decode PXF text into raw proto-binary bytes against an explicit FDS.
+
+    The limits are described under "Decode limits" above.
+    """
     text = data.encode("utf-8") if isinstance(data, str) else bytes(data)
     return _protowire.pxf_unmarshal(
-        text, bytes(fds), full_name, discard_unknown, skip_validate
+        text, bytes(fds), full_name, discard_unknown, skip_validate,
+        _limits(
+            max_message_size, max_nesting_depth, max_numeric_literal_digits,
+            max_bytes_literal_length, max_repeated_count, max_big_float_exponent,
+        ),
     )
 
 
@@ -231,10 +276,20 @@ def unmarshal_full_bytes(
     *,
     discard_unknown: bool = False,
     skip_validate: bool = False,
+    max_message_size: int = 0,
+    max_nesting_depth: int = 0,
+    max_numeric_literal_digits: int = 0,
+    max_bytes_literal_length: int = 0,
+    max_repeated_count: int = 0,
+    max_big_float_exponent: int = 0,
 ) -> tuple[bytes, Result]:
     text = data.encode("utf-8") if isinstance(data, str) else bytes(data)
     raw, set_paths, null_paths, dirs, tables, protos = _protowire.pxf_unmarshal_full(
-        text, bytes(fds), full_name, discard_unknown, skip_validate
+        text, bytes(fds), full_name, discard_unknown, skip_validate,
+        _limits(
+            max_message_size, max_nesting_depth, max_numeric_literal_digits,
+            max_bytes_literal_length, max_repeated_count, max_big_float_exponent,
+        ),
     )
     return raw, _wrap_result(set_paths, null_paths, dirs, tables, protos)
 
@@ -248,12 +303,25 @@ def unmarshal(
     *,
     discard_unknown: bool = False,
     skip_validate: bool = False,
+    max_message_size: int = 0,
+    max_nesting_depth: int = 0,
+    max_numeric_literal_digits: int = 0,
+    max_bytes_literal_length: int = 0,
+    max_repeated_count: int = 0,
+    max_big_float_exponent: int = 0,
 ) -> None:
-    """Decode PXF text into `msg` (in place). Mirrors Go pxf.Unmarshal."""
+    """Decode PXF text into `msg` (in place). Mirrors Go pxf.Unmarshal.
+
+    The limits are described under "Decode limits" above.
+    """
     text = data.encode("utf-8") if isinstance(data, str) else bytes(data)
     fds = fds_for_message(msg)
     raw = _protowire.pxf_unmarshal(
-        text, fds, msg.DESCRIPTOR.full_name, discard_unknown, skip_validate
+        text, fds, msg.DESCRIPTOR.full_name, discard_unknown, skip_validate,
+        _limits(
+            max_message_size, max_nesting_depth, max_numeric_literal_digits,
+            max_bytes_literal_length, max_repeated_count, max_big_float_exponent,
+        ),
     )
     msg.Clear()
     msg.MergeFromString(raw)
@@ -265,16 +333,27 @@ def unmarshal_full(
     *,
     discard_unknown: bool = False,
     skip_validate: bool = False,
+    max_message_size: int = 0,
+    max_nesting_depth: int = 0,
+    max_numeric_literal_digits: int = 0,
+    max_bytes_literal_length: int = 0,
+    max_repeated_count: int = 0,
+    max_big_float_exponent: int = 0,
 ) -> Result:
     """Decode PXF + return per-field presence (set/null) metadata and any
     `@<name>` / `@dataset` directives the decoder saw at the document root.
 
-    Mirrors Go pxf.UnmarshalFull.
+    Mirrors Go pxf.UnmarshalFull. The limits are described under "Decode
+    limits" above.
     """
     text = data.encode("utf-8") if isinstance(data, str) else bytes(data)
     fds = fds_for_message(msg)
     raw, set_paths, null_paths, dirs, tables, protos = _protowire.pxf_unmarshal_full(
-        text, fds, msg.DESCRIPTOR.full_name, discard_unknown, skip_validate
+        text, fds, msg.DESCRIPTOR.full_name, discard_unknown, skip_validate,
+        _limits(
+            max_message_size, max_nesting_depth, max_numeric_literal_digits,
+            max_bytes_literal_length, max_repeated_count, max_big_float_exponent,
+        ),
     )
     msg.Clear()
     msg.MergeFromString(raw)
@@ -364,16 +443,39 @@ class DatasetReader:
     file-like / chunked-IO bridge is a possible follow-up.
     """
 
-    def __init__(self, native: object) -> None:
+    def __init__(self, native: object, limits: dict[str, int] | None = None) -> None:
         # Private — construct via `from_bytes`. We keep the native handle
-        # only; type/columns/directives are forwarded on demand.
+        # only; type/columns/directives are forwarded on demand. `limits` are
+        # the from_bytes keywords, which scan passes on to bind_row.
         self._native = native
+        self._limits = limits or {}
 
     @classmethod
-    def from_bytes(cls, data: bytes | str) -> "DatasetReader":
+    def from_bytes(
+        cls,
+        data: bytes | str,
+        *,
+        max_message_size: int = 0,
+        max_nesting_depth: int = 0,
+        max_numeric_literal_digits: int = 0,
+        max_bytes_literal_length: int = 0,
+        max_repeated_count: int = 0,
+        max_big_float_exponent: int = 0,
+    ) -> "DatasetReader":
+        """Read `data`'s `@dataset` header. The limits are described under
+        "Decode limits" above; `scan` binds each row under the same ones."""
         if isinstance(data, str):
             data = data.encode("utf-8")
-        return cls(_protowire.PxfDatasetReader.from_bytes(bytes(data)))
+        limits = dict(
+            max_message_size=max_message_size,
+            max_nesting_depth=max_nesting_depth,
+            max_numeric_literal_digits=max_numeric_literal_digits,
+            max_bytes_literal_length=max_bytes_literal_length,
+            max_repeated_count=max_repeated_count,
+            max_big_float_exponent=max_big_float_exponent,
+        )
+        native = _protowire.PxfDatasetReader.from_bytes(bytes(data), _limits(**limits))
+        return cls(native, limits)
 
     @property
     def type(self) -> str:
@@ -437,7 +539,7 @@ class DatasetReader:
         cells = self.next_or_none()
         if cells is None:
             return False
-        bind_row(msg, self.columns, cells, skip_validate=skip_validate)
+        bind_row(msg, self.columns, cells, skip_validate=skip_validate, **self._limits)
         return True
 
 
@@ -450,6 +552,12 @@ def bind_row(
     row: tuple[Cell, ...] | list[Cell],
     *,
     skip_validate: bool = True,
+    max_message_size: int = 0,
+    max_nesting_depth: int = 0,
+    max_numeric_literal_digits: int = 0,
+    max_bytes_literal_length: int = 0,
+    max_repeated_count: int = 0,
+    max_big_float_exponent: int = 0,
 ) -> None:
     """Bind a `@dataset` row's cells to `msg`'s fields by column name.
 
@@ -470,7 +578,8 @@ def bind_row(
 
     `skip_validate` defaults to True: the descriptor was validated once
     when the caller constructed the message factory, and re-running the
-    reserved-name check per row is wasteful in tight loops.
+    reserved-name check per row is wasteful in tight loops. The limits apply
+    to the synthetic body, as for `unmarshal`.
     """
     if len(columns) != len(row):
         raise ValueError(
@@ -481,7 +590,15 @@ def bind_row(
         if cell is None:
             continue
         parts.append(f"{col} = {_cell_to_pxf(cell)}\n")
-    unmarshal("".join(parts), msg, skip_validate=skip_validate)
+    unmarshal(
+        "".join(parts), msg, skip_validate=skip_validate,
+        max_message_size=max_message_size,
+        max_nesting_depth=max_nesting_depth,
+        max_numeric_literal_digits=max_numeric_literal_digits,
+        max_bytes_literal_length=max_bytes_literal_length,
+        max_repeated_count=max_repeated_count,
+        max_big_float_exponent=max_big_float_exponent,
+    )
 
 
 def _cell_to_pxf(cell: tuple[CellKind, object]) -> str:
