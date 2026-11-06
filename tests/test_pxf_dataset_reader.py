@@ -233,3 +233,15 @@ def test_bind_row_string_escape(all_types_cls):
     msg = all_types_cls()
     pxf.bind_row(msg, tr.columns, row)
     assert msg.string_field == 'she said "hi"'
+
+
+def test_bind_row_string_with_line_feed(all_types_cls):
+    # The decoder rejects a raw line feed in a string (protowire#350), so
+    # the synthetic body must write it as \n, as protowire-cpp's BindRow does.
+    src = b'@dataset test.v1.AllTypes ( string_field )\n( "a\\nb\\r\\tc" )\n'
+    tr = pxf.DatasetReader.from_bytes(src)
+    (row,) = list(tr)
+    assert row == (("string", "a\nb\r\tc"),)
+    msg = all_types_cls()
+    pxf.bind_row(msg, tr.columns, row)
+    assert msg.string_field == "a\nb\r\tc"

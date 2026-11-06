@@ -456,9 +456,10 @@ def _cell_to_pxf(cell: tuple[CellKind, object]) -> str:
     if kind == "null":
         return "null"
     if kind == "string":
-        # Escape `"` and `\`; other characters round-trip verbatim because
-        # the lexer accepts UTF-8 in strings.
-        s = str(value).replace("\\", "\\\\").replace('"', '\\"')
+        # Escape `\`, `"` and the line feed, which the lexer rejects raw in a
+        # string (protowire#350); protowire-cpp's BindRow writes it as `\n`
+        # too. Other characters round-trip verbatim.
+        s = str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
         return f'"{s}"'
     if kind in ("int", "float", "timestamp", "duration"):
         return str(value)  # raw text
