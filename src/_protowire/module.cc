@@ -132,16 +132,42 @@ nb::object CellToPyTuple(const std::optional<protowire::pxf::ValuePtr>& cell) {
       *cell);
 }
 
+// The decode limits of HARDENING.md § Mandatory limits, as Python passes them:
+// (max_message_size, max_nesting_depth, max_numeric_literal_digits,
+// max_bytes_literal_length, max_repeated_count, max_big_float_exponent).
+// 0 selects the default in protowire/limits.h.
+using PxfLimits = std::tuple<int, int, int, int, int, int>;
+
+void ApplyLimits(const PxfLimits& l, protowire::pxf::UnmarshalOptions& opts) {
+  static constexpr const char* kNames[] = {
+      "max_message_size",         "max_nesting_depth",  "max_numeric_literal_digits",
+      "max_bytes_literal_length", "max_repeated_count", "max_big_float_exponent"};
+  const int v[] = {std::get<0>(l), std::get<1>(l), std::get<2>(l),
+                   std::get<3>(l), std::get<4>(l), std::get<5>(l)};
+  for (int i = 0; i < 6; ++i) {
+    if (v[i] < 0) {
+      throw nb::value_error((std::string(kNames[i]) + " must not be negative").c_str());
+    }
+  }
+  opts.max_message_size = v[0];
+  opts.max_nesting_depth = v[1];
+  opts.max_numeric_literal_digits = v[2];
+  opts.max_bytes_literal_length = v[3];
+  opts.max_repeated_count = v[4];
+  opts.max_big_float_exponent = v[5];
+}
+
 // PXF text -> binary proto bytes.
 nb::bytes PxfUnmarshal(nb::bytes text, nb::bytes fds_bytes,
                        const std::string& full_name, bool discard_unknown,
-                       bool skip_validate) {
+                       bool skip_validate, const PxfLimits& limits) {
   auto schema = BuildSchema(std::string_view(fds_bytes.c_str(), fds_bytes.size()));
   const auto* desc = FindDescriptor(schema, full_name);
   std::unique_ptr<pbuf::Message> msg(
       schema.factory->GetPrototype(desc)->New());
 
   protowire::pxf::UnmarshalOptions opts;
+  ApplyLimits(limits, opts);
   opts.discard_unknown = discard_unknown;
   opts.skip_validate = skip_validate;
   auto st = protowire::pxf::Unmarshal(
@@ -174,13 +200,14 @@ std::tuple<nb::bytes, std::vector<std::string>, std::vector<std::string>,
            std::vector<PyProtoDirective>>
 PxfUnmarshalFull(nb::bytes text, nb::bytes fds_bytes,
                  const std::string& full_name, bool discard_unknown,
-                 bool skip_validate) {
+                 bool skip_validate, const PxfLimits& limits) {
   auto schema = BuildSchema(std::string_view(fds_bytes.c_str(), fds_bytes.size()));
   const auto* desc = FindDescriptor(schema, full_name);
   std::unique_ptr<pbuf::Message> msg(
       schema.factory->GetPrototype(desc)->New());
 
   protowire::pxf::UnmarshalOptions opts;
+  ApplyLimits(limits, opts);
   opts.discard_unknown = discard_unknown;
   opts.skip_validate = skip_validate;
   auto r = protowire::pxf::UnmarshalFull(
@@ -273,11 +300,13 @@ PxfValidateDescriptor(nb::bytes fds_bytes, const std::string& full_name) {
 // streambuf bridge is a possible follow-up.
 class PyDatasetReader {
  public:
-  static std::unique_ptr<PyDatasetReader> FromBytes(nb::bytes data) {
+  static std::unique_ptr<PyDatasetReader> FromBytes(nb::bytes data, const PxfLimits& limits) {
+    protowire::pxf::UnmarshalOptions opts;
+    ApplyLimits(limits, opts);
     auto out = std::unique_ptr<PyDatasetReader>(new PyDatasetReader());
     out->stream_ = std::make_unique<std::istringstream>(
         std::string(data.c_str(), data.size()));
-    auto tr = protowire::pxf::DatasetReader::Create(out->stream_.get());
+    auto tr = protowire::pxf::DatasetReader::Create(out->stream_.get(), opts);
     if (!tr.ok()) {
       throw nb::value_error(("pxf.DatasetReader: " + tr.status().ToString()).c_str());
     }
@@ -388,8 +417,17 @@ std::string PxfMarshal(nb::bytes msg_bytes, nb::bytes fds_bytes,
 // SbeCodec wraps protowire::sbe::Codec along with the descriptor pool.
 class SbeCodec {
  public:
+  // max_message_size and max_repeated_count are sbe::CodecOptions'; 0 selects
+  // the default in protowire/limits.h.
   static std::unique_ptr<SbeCodec> Create(
-      nb::bytes fds_bytes, std::vector<std::string> file_names) {
+      nb::bytes fds_bytes, std::vector<std::string> file_names,
+      int max_message_size, int max_repeated_count) {
+    if (max_message_size < 0) {
+      throw nb::value_error("max_message_size must not be negative");
+    }
+    if (max_repeated_count < 0) {
+      throw nb::value_error("max_repeated_count must not be negative");
+    }
     auto out = std::make_unique<SbeCodec>();
     out->schema_ = BuildSchema(std::string_view(fds_bytes.c_str(), fds_bytes.size()));
 
@@ -408,7 +446,10 @@ class SbeCodec {
     }
     if (selected.empty()) selected = out->schema_.files;
 
-    auto codec = protowire::sbe::Codec::New(selected);
+    protowire::sbe::CodecOptions opts;
+    opts.max_message_size = max_message_size;
+    opts.max_repeated_count = max_repeated_count;
+    auto codec = protowire::sbe::Codec::New(selected, opts);
     if (!codec.ok()) {
       throw nb::value_error(
           ("sbe.Codec: " + codec.status().ToString()).c_str());
@@ -541,16 +582,18 @@ inline SbeCodec::PyGroupView SbeCodec::PyView::Group(const std::string& name) co
 NB_MODULE(_protowire, m) {
   m.doc() = "protowire native extension (nanobind shim around protowire-cpp)";
 
+  const PxfLimits no_limits{0, 0, 0, 0, 0, 0};
   m.def("pxf_unmarshal", &PxfUnmarshal, "text"_a, "fds"_a, "full_name"_a,
-        "discard_unknown"_a = false, "skip_validate"_a = false);
+        "discard_unknown"_a = false, "skip_validate"_a = false, "limits"_a = no_limits);
   m.def("pxf_unmarshal_full", &PxfUnmarshalFull, "text"_a, "fds"_a,
-        "full_name"_a, "discard_unknown"_a = false, "skip_validate"_a = false);
+        "full_name"_a, "discard_unknown"_a = false, "skip_validate"_a = false,
+        "limits"_a = no_limits);
   m.def("pxf_marshal", &PxfMarshal, "msg_bytes"_a, "fds"_a, "full_name"_a,
         "max_nesting_depth"_a = 0);
   m.def("pxf_validate_descriptor", &PxfValidateDescriptor, "fds"_a, "full_name"_a);
 
   nb::class_<PyDatasetReader>(m, "PxfDatasetReader")
-      .def_static("from_bytes", &PyDatasetReader::FromBytes, "data"_a)
+      .def_static("from_bytes", &PyDatasetReader::FromBytes, "data"_a, "limits"_a = no_limits)
       .def_prop_ro("type", &PyDatasetReader::Type)
       .def_prop_ro("columns", &PyDatasetReader::Columns)
       .def_prop_ro("directives", &PyDatasetReader::Directives)
@@ -561,7 +604,8 @@ NB_MODULE(_protowire, m) {
       .def("__next__", &PyDatasetReader::Next);
 
   nb::class_<SbeCodec>(m, "SbeCodec")
-      .def_static("create", &SbeCodec::Create, "fds"_a, "file_names"_a)
+      .def_static("create", &SbeCodec::Create, "fds"_a, "file_names"_a,
+                  "max_message_size"_a = 0, "max_repeated_count"_a = 0)
       .def("marshal", &SbeCodec::Marshal, "msg_bytes"_a, "full_name"_a)
       .def("unmarshal", &SbeCodec::Unmarshal, "data"_a, "full_name"_a)
       .def("new_view", &SbeCodec::NewView, "data"_a);
