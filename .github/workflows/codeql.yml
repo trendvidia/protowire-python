@@ -17,7 +17,7 @@ permissions:
 
 env:
   # See ci.yml for the rationale on this pin.
-  PROTOWIRE_CPP_REF: v1.2.0
+  PROTOWIRE_CPP_REF: 4e96aba90fc9a49bb78df7868ecf925ea7b0910d  # v2.0.0's merge commit; becomes v2.0.0 when tagged
 
 jobs:
   analyze:
