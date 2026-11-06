@@ -11,6 +11,49 @@ format changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **Built on protowire-cpp v2.0.0** (#31), up from v1.2.0. This port decodes
+  and encodes PXF and SBE through it, so the changes below reach Python
+  callers with no Python API change. Several narrow what decodes, encodes or
+  binds. See protowire-cpp's [2.0.0 changelog](https://github.com/trendvidia/protowire-cpp/blob/main/CHANGELOG.md)
+  for each one.
+  - **Decoding rejects more.** `null` is rejected where the spec rejects it:
+    on a plain proto3 scalar, nested or not, a repeated or map field, a proto2
+    `required` field, an editions IMPLICIT scalar, and any field with
+    `(pxf.required)`. A keyed entry whose block sets its key field to `null`,
+    or another member of the key's oneof, is rejected. A raw line feed in a
+    simple string is rejected; write it as `\n`. A `BigFloat` literal is
+    refused in protowire-go's words and order of checks. Built on v1.2.0,
+    this port accepted 11 of the spec's `nulls/` and `keyed/` reject fixtures.
+  - **More schemas are refused at bind time:** a default that cannot be used
+    (on a repeated or map field, two on one oneof, `(pxf.default)` and
+    `@default` disagreeing), `(pxf.required)` on a oneof member, an option at
+    a retired extension number (recompile the descriptor), and a message
+    redefining a well-known type with the wrong fields.
+  - **`pxf.marshal` writes what reads back:** an unset field with
+    `(pxf.default)` or `(pxf.required)` is now written, so that decoding with
+    `unmarshal_full` gives the same message. An unset `optional` field that
+    is `(pxf.required)` is an error. A message nested past 100 levels is
+    refused rather than written.
+  - **SBE refuses** a value its `(sbe.encoding)` type cannot hold, in both
+    directions, a header value past 16 bits, two messages sharing a
+    `(sbe.template_id)` in one schema, a header whose schema id is not the
+    target's, and a oneof field.
+  - **Error text** matches protowire-go's. Text a caller matched on changes.
+
+### Added
+
+- **`Violation.kind` values `"default_option"`, `"retired_number"` and
+  `"well_known_shape"`,** for the bind-time checks above. They came back as
+  `""`.
+
+### Fixed
+
+- **`bind_row` and `DatasetReader.scan` escape a line feed in a string
+  cell.** On protowire-cpp v2.0.0 a cell holding one failed with `newline in
+  string literal`.
+
 ## [1.1.0] — 2026-10-31
 
 ### Added
