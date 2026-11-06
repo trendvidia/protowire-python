@@ -233,7 +233,9 @@ PxfUnmarshalFull(nb::bytes text, nb::bytes fds_bytes,
 // PXF schema reserved-name check (draft §3.13). Returns a list of
 // (kind, element, name, file) tuples. Empty list ⇒ conformant schema.
 // kind values: "field" / "oneof" / "enum_value" / "key_option" /
-// "required_default".
+// "required_default" / "default_option" / "retired_number" /
+// "well_known_shape". The switch below has no default, so -Wswitch flags a
+// kind cpp adds and this list lacks.
 std::vector<std::tuple<std::string, std::string, std::string, std::string>>
 PxfValidateDescriptor(nb::bytes fds_bytes, const std::string& full_name) {
   auto schema = BuildSchema(std::string_view(fds_bytes.c_str(), fds_bytes.size()));
@@ -253,6 +255,9 @@ PxfValidateDescriptor(nb::bytes fds_bytes, const std::string& full_name) {
         kind = "required_default";
         name = v.element.substr(v.element.rfind('.') + 1);  // cpp leaves name empty here.
         break;
+      case protowire::pxf::ViolationKind::kDefaultOption:  kind = "default_option";   break;
+      case protowire::pxf::ViolationKind::kRetiredNumber:  kind = "retired_number";   break;
+      case protowire::pxf::ViolationKind::kWellKnownShape: kind = "well_known_shape"; break;
     }
     out.emplace_back(std::move(kind), v.element, std::move(name), v.file);
   }
