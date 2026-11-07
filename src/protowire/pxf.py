@@ -8,7 +8,6 @@ objects never cross. The wrapper handles conversion on each side.
 
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass, field
 from typing import Literal, Union
 
@@ -443,13 +442,13 @@ class DatasetReader:
     file-like / chunked-IO bridge is a possible follow-up.
     """
 
-    def __init__(self, native: object, limits: dict[str, int] | None = None) -> None:
+    def __init__(self, native: object) -> None:
         # Private — construct via `from_bytes`. We keep the native handle
-        # only; type/columns/directives are forwarded on demand. `limits` are
-        # the from_bytes keywords, which scan passes on to bind_row (all but
-        # max_message_size).
+        # only; type/columns/directives are forwarded on demand. The native
+        # reader keeps the from_bytes limits, which scan binds each row under.
         self._native = native
-        self._limits = limits or {}
+        # scan's descriptor set, for the last message type it bound.
+        self._fds: tuple[object, bytes] | None = None
 
     @classmethod
     def from_bytes(
@@ -468,16 +467,11 @@ class DatasetReader:
         except `max_message_size`, which caps the bytes of a row as it is read."""
         if isinstance(data, str):
             data = data.encode("utf-8")
-        limits = dict(
-            max_message_size=max_message_size,
-            max_nesting_depth=max_nesting_depth,
-            max_numeric_literal_digits=max_numeric_literal_digits,
-            max_bytes_literal_length=max_bytes_literal_length,
-            max_repeated_count=max_repeated_count,
-            max_big_float_exponent=max_big_float_exponent,
-        )
-        native = _protowire.PxfDatasetReader.from_bytes(bytes(data), _limits(**limits))
-        return cls(native, limits)
+        native = _protowire.PxfDatasetReader.from_bytes(bytes(data), _limits(
+            max_message_size, max_nesting_depth, max_numeric_literal_digits,
+            max_bytes_literal_length, max_repeated_count, max_big_float_exponent,
+        ))
+        return cls(native)
 
     @property
     def type(self) -> str:
@@ -534,18 +528,36 @@ class DatasetReader:
         """
         return self._native.tail()
 
-    def scan(self, msg: Message, *, skip_validate: bool = True) -> bool:
-        """Read the next row and bind its cells to `msg`'s fields by
-        column name. Returns True on success; returns False at EOF
-        (callers check `reader.done`)."""
-        cells = self.next_or_none()
-        if cells is None:
+    def scan(
+        self, msg: Message, *, skip_validate: bool = False, discard_unknown: bool = False,
+    ) -> bool:
+        """Read the next row and bind it to `msg`, as `bind_row` binds it.
+        Returns True on success; returns False at EOF (callers check
+        `reader.done`).
+
+        This is protowire-cpp's `DatasetReader::Scan`, which binds a row as
+        protowire-go's `Scan` does: under the limits given to `from_bytes`
+        except `max_message_size`, which caps the bytes of a row as it is
+        read (the body a row is bound as repeats the column names, so it is
+        wider than the row). A decode error carries the row's position in
+        the input. Unless `skip_validate` is set, `msg`'s schema is checked
+        against the bind-time rules, as `unmarshal` checks it, on the first
+        row of its type rather than on every row.
+
+        As with `bind_row`, the row binds into what `msg` already holds: pass
+        a new or cleared message for each row.
+        """
+        desc = type(msg).DESCRIPTOR
+        if self._fds is None or self._fds[0] is not desc:
+            self._fds = (desc, fds_for_message(msg))
+        raw = self._native.scan(
+            msg.SerializePartialToString(), self._fds[1], desc.full_name,
+            discard_unknown, skip_validate,
+        )
+        if raw is None:
             return False
-        # Every limit but max_message_size, as protowire-go binds a row: the
-        # body a row is bound as repeats the column names, so it is wider
-        # than the row, whose bytes the reader has already capped.
-        limits = dict(self._limits, max_message_size=0)
-        bind_row(msg, self.columns, cells, skip_validate=skip_validate, **limits)
+        msg.Clear()
+        msg.MergeFromString(raw)
         return True
 
 
@@ -557,7 +569,8 @@ def bind_row(
     columns: tuple[str, ...] | list[str],
     row: tuple[Cell, ...] | list[Cell],
     *,
-    skip_validate: bool = True,
+    skip_validate: bool = False,
+    discard_unknown: bool = False,
     max_message_size: int = 0,
     max_nesting_depth: int = 0,
     max_numeric_literal_digits: int = 0,
@@ -567,62 +580,57 @@ def bind_row(
 ) -> None:
     """Bind a `@dataset` row's cells to `msg`'s fields by column name.
 
-    `columns` and `row` MUST have the same length. Cell-state semantics:
+    This is protowire-cpp's `BindRow`, which binds a row as protowire-go's
+    does: as the body `<column> = <cell>` for each non-empty cell, decoded
+    as `unmarshal_full` decodes it. A column may be a dotted path into a
+    sub-message. `columns` and `row` MUST have the same length. Cell-state
+    semantics:
 
       - `None`        — field absent. (pxf.default) applies if declared;
                         (pxf.required) errors if neither default nor
                         value is present.
-      - `("null", _)` — field cleared (draft §3.9).
+      - `("null", _)` — field present-but-null (draft §3.9): it stays unset
+                        and keeps (pxf.default) off. Only a field with
+                        presence may be null.
       - any other     — field set to the cell's value.
 
-    Strategy: render the row as a synthetic PXF body (`<col> = <val>`
-    per non-None cell) and run it through `unmarshal`. This mirrors
-    `protowire-cpp`'s `BindRow` and reuses every branch of the existing
-    decoder — WKT timestamps / durations, wrapper-type nullability,
-    enum-by-name resolution, oneof handling — instead of growing a
-    parallel Cell→FieldDescriptor switch.
+    The row binds into what `msg` already holds, as in protowire-go: `msg`
+    is not cleared first. So bind each row into a new or cleared message. In
+    a reused one, a field an earlier row set keeps its value under an empty
+    or `null` cell.
 
-    `skip_validate` defaults to True: the descriptor was validated once
-    when the caller constructed the message factory, and re-running the
-    reserved-name check per row is wasteful in tight loops. The limits apply
-    to the synthetic body, as for `unmarshal`.
+    Unless `skip_validate` is set, `msg`'s schema is checked against the
+    bind-time rules on every call, as `unmarshal` checks it. A caller
+    binding many rows of one type can check once and pass
+    `skip_validate=True`; `DatasetReader.scan` does that itself. A decode
+    error is positioned in the body the row is bound as, since a row passed
+    as cells has no position in its input. The limits apply to the body, as
+    for `unmarshal`.
     """
-    if len(columns) != len(row):
-        raise ValueError(
-            f"bind_row: {len(columns)} columns vs {len(row)} cells"
-        )
-    parts: list[str] = []
-    for col, cell in zip(columns, row):
-        if cell is None:
-            continue
-        parts.append(f"{col} = {_cell_to_pxf(cell)}\n")
-    unmarshal(
-        "".join(parts), msg, skip_validate=skip_validate,
-        max_message_size=max_message_size,
-        max_nesting_depth=max_nesting_depth,
-        max_numeric_literal_digits=max_numeric_literal_digits,
-        max_bytes_literal_length=max_bytes_literal_length,
-        max_repeated_count=max_repeated_count,
-        max_big_float_exponent=max_big_float_exponent,
+    raw = _protowire.pxf_bind_row(
+        msg.SerializePartialToString(), list(columns), [_native_cell(c) for c in row],
+        fds_for_message(msg), msg.DESCRIPTOR.full_name, discard_unknown, skip_validate,
+        _limits(
+            max_message_size, max_nesting_depth, max_numeric_literal_digits,
+            max_bytes_literal_length, max_repeated_count, max_big_float_exponent,
+        ),
     )
+    msg.Clear()
+    msg.MergeFromString(raw)
 
 
-def _cell_to_pxf(cell: tuple[CellKind, object]) -> str:
+def _native_cell(cell: Cell | None):
+    """A cell in the shape the native bind_row takes: None, or (kind, value)
+    with value a str, or a bool for "bool" and bytes for "bytes"."""
+    if cell is None:
+        return None
     kind, value = cell
     if kind == "null":
-        return "null"
-    if kind == "string":
-        # Escape `\`, `"` and the line feed, which the lexer rejects raw in a
-        # string (protowire#350); protowire-cpp's BindRow writes it as `\n`
-        # too. Other characters round-trip verbatim.
-        s = str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-        return f'"{s}"'
-    if kind in ("int", "float", "timestamp", "duration"):
-        return str(value)  # raw text
+        return ("null", None)
+    if kind in ("string", "int", "float", "ident", "timestamp", "duration"):
+        return (kind, str(value))
     if kind == "bool":
-        return "true" if value else "false"
+        return (kind, bool(value))
     if kind == "bytes":
-        return 'b"' + base64.b64encode(value).decode("ascii") + '"'
-    if kind == "ident":
-        return str(value)
+        return (kind, bytes(value))
     raise ValueError(f"bind_row: unknown cell kind {kind!r}")
