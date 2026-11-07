@@ -92,6 +92,10 @@ format changes.
   `max_message_size`,** as protowire-go does: `dataset input holds N bytes
   without a row boundary, MaxMessageSize=M`. The cap counts every byte the
   reader holds, the header included, and the reader reads 4 KiB at a time.
+- **`DatasetReader.scan` no longer applies `max_message_size` to the row it
+  binds** (#45), as protowire-go binds it. The body a row is bound as repeats
+  the column names, so it is wider than the row: a row the reader accepted
+  could still be refused when bound. The other limits apply as before.
 - **`DatasetReader` positions count from the start of the input.** Every
   row's error was at `1:1`.
 - **`bind_row` and `DatasetReader.scan` escape a line feed in a string
