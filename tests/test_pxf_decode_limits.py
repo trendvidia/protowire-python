@@ -211,8 +211,6 @@ def test_a_negative_limit_is_an_error(name):
 _BYTES_ROW = "@dataset lim.H (b)\n(" + _bytes_doc(192).split(" = ", 1)[1].strip() + ")\n"
 
 
-@pytest.mark.xfail(strict=True, reason="protowire-cpp#160: rows are read under the default "
-                   "MaxBytesLiteralLength")
 def test_dataset_reader_reads_rows_under_its_limits():
     reader = pxf.DatasetReader.from_bytes(_BYTES_ROW, max_bytes_literal_length=191)
     with pytest.raises(ValueError, match="MaxBytesLiteralLength=191"):
@@ -220,7 +218,6 @@ def test_dataset_reader_reads_rows_under_its_limits():
 
 
 def test_scan_refuses_a_cell_past_the_readers_limit():
-    # Until protowire-cpp#160, the reader returns the row and binding refuses it.
     with pytest.raises(ValueError, match="MaxBytesLiteralLength=191"):
         pxf.DatasetReader.from_bytes(_BYTES_ROW, max_bytes_literal_length=191).scan(H())
     msg = H()
@@ -238,3 +235,4 @@ def test_scan_binds_under_the_readers_limits():
     msg = H()
     assert pxf.DatasetReader.from_bytes(data, max_numeric_literal_digits=5000).scan(msg)
     assert msg.HasField("i")
+

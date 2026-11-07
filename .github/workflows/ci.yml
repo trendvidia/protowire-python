@@ -19,7 +19,7 @@ env:
   # Pin the sibling C++ checkout to a tagged protowire-cpp release. Python
   # decodes and encodes PXF and SBE through it, so a spec fix reaches this
   # port only when the pin moves. Bump in lockstep with cpp release cuts.
-  PROTOWIRE_CPP_REF: v2.0.0
+  PROTOWIRE_CPP_REF: v2.1.0
 
 jobs:
   # ---------------------------------------------------------------------

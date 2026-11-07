@@ -13,6 +13,9 @@ format changes.
 
 ### Changed
 
+- **Built on protowire-cpp v2.1.0** (#45), up from v2.0.0. Its fixes to the
+  `@dataset` streaming reader reach `pxf.DatasetReader`; they are listed under
+  Fixed below. See protowire-cpp's [2.1.0 release notes](https://github.com/trendvidia/protowire-cpp/releases/tag/v2.1.0).
 - **Built on protowire-cpp v2.0.0** (#31), up from v1.2.0. This port decodes
   and encodes PXF and SBE through it, so the changes below reach Python
   callers with no Python API change. Several narrow what decodes, encodes or
@@ -76,6 +79,21 @@ format changes.
 
 ### Fixed
 
+- **`DatasetReader` refuses a row cut short instead of ending the dataset
+  there** (#45). A last row whose `)` never came, a broken row followed by
+  more rows, or junk between rows read as a shorter, complete dataset, with no
+  error. Each is now the error `unmarshal_full` gives, at the same position,
+  as protowire-go's reader does. The rows end only at the end of the input or
+  at the next directive.
+- **`DatasetReader` reads rows under its `max_bytes_literal_length`**
+  (protowire-cpp#160). Rows were parsed under the default, so a lowered limit
+  was only enforced when `scan` bound the row, and `next_or_none` returned it.
+- **`DatasetReader` caps the bytes it holds while looking for a row's end at
+  `max_message_size`,** as protowire-go does: `dataset input holds N bytes
+  without a row boundary, MaxMessageSize=M`. The cap counts every byte the
+  reader holds, the header included, and the reader reads 4 KiB at a time.
+- **`DatasetReader` positions count from the start of the input.** Every
+  row's error was at `1:1`.
 - **`bind_row` and `DatasetReader.scan` escape a line feed in a string
   cell.** On protowire-cpp v2.0.0 a cell holding one failed with `newline in
   string literal`.

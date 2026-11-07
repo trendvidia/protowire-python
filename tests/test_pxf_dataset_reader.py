@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from protowire import pxf
@@ -245,3 +247,93 @@ def test_bind_row_string_with_line_feed(all_types_cls):
     msg = all_types_cls()
     pxf.bind_row(msg, tr.columns, row)
     assert msg.string_field == "a\nb\r\tc"
+
+
+# ---- appending: where a row sequence may end (spec testdata/dataset) -------
+#
+# Four of the spec's fixtures, copied verbatim from testdata/dataset/ of
+# trendvidia/protowire (CI has no checkout of it). The errors are protowire-go
+# v1.17.0's, streamed through its DatasetReader: same text, same position. On
+# protowire-cpp v2.0.0 the three broken ones read as one clean row, then EOF.
+
+_FIXTURES = {
+    "truncated-row-eof": """\
+# §3.4.4 appending. The last row is cut short by end of input — the shape
+# an interrupted append leaves behind. MUST be rejected, by the streaming
+# API as well as the materializing one: a row whose closing ")" never
+# arrives is a decode error, not the end of the row sequence.
+
+@dataset test.v1.AllTypes (string_field, int32_field)
+
+("row-1", 1)
+("row-2", 2
+""",
+    "truncated-row-then-rows": """\
+# §3.4.4 appending. A row cut short mid-number, followed by complete rows
+# appended later. MUST be rejected — a decoder that treated the broken row
+# as the end of the sequence would silently drop every row after it.
+
+@dataset test.v1.AllTypes (string_field, int32_field)
+
+("row-1", 1)
+("row-2", 2
+("row-3", 3)
+("row-4", 4)
+""",
+    "junk-between-rows": """\
+# §3.4.4 appending. Something other than a row or a directive where the next
+# row could begin. MUST be rejected — the row sequence ends only at end of
+# input or at the next directive.
+
+@dataset test.v1.AllTypes (string_field, int32_field)
+
+("row-1", 1)
+xyz
+("row-2", 2)
+""",
+    "rows-end-at-directive": """\
+# §3.4.4 appending. Two datasets in one document. The first one's rows end
+# at the second "@dataset" directive, which is a legitimate end of the
+# sequence. MUST be accepted: two datasets, two rows and one row.
+
+@dataset test.v1.AllTypes (string_field, int32_field)
+
+("row-1", 1)
+("row-2", 2)
+
+@dataset test.v1.AllTypes (string_field, enum_field)
+
+("row-3", STATUS_ACTIVE)
+""",
+}
+
+
+@pytest.mark.parametrize("fixture, error", [
+    ("truncated-row-eof", "10:1: expected ',' or ')' in @dataset row, got EOF"),
+    ("truncated-row-then-rows", "9:1: expected ',' or ')' in @dataset row, got ("),
+    ("junk-between-rows",
+     "8:1: @dataset directive cannot coexist with top-level field entries"),
+])
+def test_a_broken_row_is_an_error_not_the_end(all_types_cls, fixture, error):
+    reader = pxf.DatasetReader.from_bytes(_FIXTURES[fixture])
+    msg = all_types_cls()
+    assert reader.scan(msg)
+    assert (msg.string_field, msg.int32_field) == ("row-1", 1)
+    with pytest.raises(ValueError, match=re.escape(error)):
+        reader.scan(all_types_cls())
+
+
+def test_rows_end_at_the_next_directive(all_types_cls):
+    first = pxf.DatasetReader.from_bytes(_FIXTURES["rows-end-at-directive"])
+    got = []
+    msg = all_types_cls()
+    while first.scan(msg):
+        got.append((msg.string_field, msg.int32_field))
+        msg = all_types_cls()
+    assert got == [("row-1", 1), ("row-2", 2)]
+    second = pxf.DatasetReader.from_bytes(first.tail())
+    assert second.columns == ("string_field", "enum_field")
+    msg = all_types_cls()
+    assert second.scan(msg)
+    assert (msg.string_field, msg.enum_field) == ("row-3", 1)
+    assert not second.scan(all_types_cls())
