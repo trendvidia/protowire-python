@@ -446,7 +446,8 @@ class DatasetReader:
     def __init__(self, native: object, limits: dict[str, int] | None = None) -> None:
         # Private — construct via `from_bytes`. We keep the native handle
         # only; type/columns/directives are forwarded on demand. `limits` are
-        # the from_bytes keywords, which scan passes on to bind_row.
+        # the from_bytes keywords, which scan passes on to bind_row (all but
+        # max_message_size).
         self._native = native
         self._limits = limits or {}
 
@@ -463,7 +464,8 @@ class DatasetReader:
         max_big_float_exponent: int = 0,
     ) -> "DatasetReader":
         """Read `data`'s `@dataset` header. The limits are described under
-        "Decode limits" above; `scan` binds each row under the same ones."""
+        "Decode limits" above. `scan` binds each row under the same ones,
+        except `max_message_size`, which caps the bytes of a row as it is read."""
         if isinstance(data, str):
             data = data.encode("utf-8")
         limits = dict(
@@ -539,7 +541,11 @@ class DatasetReader:
         cells = self.next_or_none()
         if cells is None:
             return False
-        bind_row(msg, self.columns, cells, skip_validate=skip_validate, **self._limits)
+        # Every limit but max_message_size, as protowire-go binds a row: the
+        # body a row is bound as repeats the column names, so it is wider
+        # than the row, whose bytes the reader has already capped.
+        limits = dict(self._limits, max_message_size=0)
+        bind_row(msg, self.columns, cells, skip_validate=skip_validate, **limits)
         return True
 
 

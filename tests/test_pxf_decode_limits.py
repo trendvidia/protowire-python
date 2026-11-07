@@ -211,8 +211,6 @@ def test_a_negative_limit_is_an_error(name):
 _BYTES_ROW = "@dataset lim.H (b)\n(" + _bytes_doc(192).split(" = ", 1)[1].strip() + ")\n"
 
 
-@pytest.mark.xfail(strict=True, reason="protowire-cpp#160: rows are read under the default "
-                   "MaxBytesLiteralLength")
 def test_dataset_reader_reads_rows_under_its_limits():
     reader = pxf.DatasetReader.from_bytes(_BYTES_ROW, max_bytes_literal_length=191)
     with pytest.raises(ValueError, match="MaxBytesLiteralLength=191"):
@@ -220,7 +218,6 @@ def test_dataset_reader_reads_rows_under_its_limits():
 
 
 def test_scan_refuses_a_cell_past_the_readers_limit():
-    # Until protowire-cpp#160, the reader returns the row and binding refuses it.
     with pytest.raises(ValueError, match="MaxBytesLiteralLength=191"):
         pxf.DatasetReader.from_bytes(_BYTES_ROW, max_bytes_literal_length=191).scan(H())
     msg = H()
@@ -238,3 +235,39 @@ def test_scan_binds_under_the_readers_limits():
     msg = H()
     assert pxf.DatasetReader.from_bytes(data, max_numeric_literal_digits=5000).scan(msg)
     assert msg.HasField("i")
+
+
+def _wide_schema():
+    # Forty int32 fields with 200-character names: a row of forty 1s is
+    # 121 bytes, but the body it is bound as repeats every name, 8200 bytes.
+    fd = descriptor_pb2.FileDescriptorProto(name="wide.proto", package="w", syntax="proto3")
+    w = fd.message_type.add(name="W")
+    for i in range(40):
+        w.field.add(name=f"f{i:02d}_" + "x" * 196, number=i + 1, type=F.TYPE_INT32)
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(fd)
+    return message_factory.GetMessageClass(pool.FindMessageTypeByName("w.W"))
+
+
+W = _wide_schema()
+
+
+def test_scan_does_not_apply_max_message_size_to_the_bound_row():
+    # protowire-go binds a row under every limit but MaxMessageSize, which
+    # caps the bytes the reader holds instead. The input is 8457 bytes and
+    # passes MaxMessageSize=8192 (the reader holds at most two 4 KiB reads);
+    # each row's body is 8200 bytes and would not. Go reads all three rows.
+    names = [f.name for f in W.DESCRIPTOR.fields]
+    data = (f"@dataset w.W ({', '.join(names)})\n"
+            + f"({', '.join('1' for _ in names)})\n" * 3)
+    assert len(data) == 8457
+    reader = pxf.DatasetReader.from_bytes(data, max_message_size=8192)
+    rows = 0
+    msg = W()
+    while reader.scan(msg):
+        rows += 1
+        assert getattr(msg, names[-1]) == 1
+    assert rows == 3
+    # The reader's cap still holds: below one read's worth, the header fails.
+    with pytest.raises(ValueError, match="MaxMessageSize=4096"):
+        pxf.DatasetReader.from_bytes(data, max_message_size=4096)
