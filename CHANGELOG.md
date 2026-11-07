@@ -13,6 +13,26 @@ format changes.
 
 ### Changed
 
+- **`pxf.bind_row` and `DatasetReader.scan` bind a row as protowire-go does**
+  (#24), through protowire-cpp's `BindRow` rather than writing the row out as
+  text and decoding it with `unmarshal`. On all 43 of the spec's
+  `testdata/dataset/` fixtures, `scan` now gives protowire-go v1.17.0's
+  message or error, text and position included. Before, most failed or bound
+  differently. What changes:
+  - An absent cell takes the field's `(pxf.default)`. An absent
+    `(pxf.required)` field is an error, as in `unmarshal_full`.
+  - A cell may hold a list or a block (`scan` only; see #47 for rows read as
+    cells), and a column may be a dotted path into a sub-message.
+  - **A row binds into what the message already holds,** which is no longer
+    cleared first. In a reused message, a field an earlier row set keeps its
+    value under an empty or `null` cell, as in Go. Bind each row into a new or
+    cleared message.
+  - **The schema is checked by default** (`skip_validate=False`), as Go and
+    `unmarshal` check it. `scan` checks it on the first row of each type;
+    `bind_row` on every call. Pass `skip_validate=True` for the old behaviour.
+  - A `scan` decode error carries the row's line and column in the input,
+    and names the column (`8:1: column int32_field: ...`).
+  - Both take `discard_unknown`.
 - **Built on protowire-cpp v2.1.0** (#45), up from v2.0.0. Its fixes to the
   `@dataset` streaming reader reach `pxf.DatasetReader`; they are listed under
   Fixed below. See protowire-cpp's [2.1.0 release notes](https://github.com/trendvidia/protowire-cpp/releases/tag/v2.1.0).

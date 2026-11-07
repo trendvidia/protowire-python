@@ -157,6 +157,105 @@ void ApplyLimits(const PxfLimits& l, protowire::pxf::UnmarshalOptions& opts) {
   opts.max_big_float_exponent = v[5];
 }
 
+// PyCellToValue is CellToPyTuple's inverse, for a cell pxf.py has already
+// normalized: None for absent, else (kind, value) with value a str, a bool
+// ("bool") or bytes ("bytes"). A value cell that crossed to Python as
+// ("unknown", None), a list or a block, cannot come back.
+std::optional<protowire::pxf::ValuePtr> PyCellToValue(nb::handle cell) {
+  using namespace protowire::pxf;
+  if (cell.is_none()) return std::nullopt;
+  auto t = nb::cast<nb::tuple>(cell);
+  if (t.size() != 2) throw nb::value_error("pxf.bind_row: a cell is None or a (kind, value) pair");
+  const auto kind = nb::cast<std::string>(t[0]);
+  nb::handle v = t[1];
+  if (kind == "null") return ValuePtr(std::make_unique<NullVal>());
+  if (kind == "string") {
+    auto p = std::make_unique<StringVal>();
+    p->value = nb::cast<std::string>(v);
+    return ValuePtr(std::move(p));
+  }
+  if (kind == "int") {
+    auto p = std::make_unique<IntVal>();
+    p->raw = nb::cast<std::string>(v);
+    return ValuePtr(std::move(p));
+  }
+  if (kind == "float") {
+    auto p = std::make_unique<FloatVal>();
+    p->raw = nb::cast<std::string>(v);
+    return ValuePtr(std::move(p));
+  }
+  if (kind == "bool") {
+    auto p = std::make_unique<BoolVal>();
+    p->value = nb::cast<bool>(v);
+    return ValuePtr(std::move(p));
+  }
+  if (kind == "bytes") {
+    auto b = nb::cast<nb::bytes>(v);
+    auto p = std::make_unique<BytesVal>();
+    const auto* d = reinterpret_cast<const uint8_t*>(b.c_str());
+    p->value.assign(d, d + b.size());
+    return ValuePtr(std::move(p));
+  }
+  if (kind == "ident") {
+    auto p = std::make_unique<IdentVal>();
+    p->name = nb::cast<std::string>(v);
+    return ValuePtr(std::move(p));
+  }
+  if (kind == "timestamp") {
+    auto p = std::make_unique<TimestampVal>();
+    p->raw = nb::cast<std::string>(v);
+    return ValuePtr(std::move(p));
+  }
+  if (kind == "duration") {
+    auto p = std::make_unique<DurationVal>();
+    p->raw = nb::cast<std::string>(v);
+    return ValuePtr(std::move(p));
+  }
+  throw nb::value_error(("pxf.bind_row: unknown cell kind '" + kind + "'").c_str());
+}
+
+// NewMessageFrom makes a message of desc holding msg_bytes. A row binds into
+// what the message already holds, as protowire-go's BindRow and Scan do: they
+// do not reset it first.
+std::unique_ptr<pbuf::Message> NewMessageFrom(const SchemaBundle& schema,
+                                              const pbuf::Descriptor* desc,
+                                              nb::bytes msg_bytes, const char* what) {
+  std::unique_ptr<pbuf::Message> msg(schema.factory->GetPrototype(desc)->New());
+  if (!msg->ParsePartialFromArray(msg_bytes.c_str(), static_cast<int>(msg_bytes.size()))) {
+    throw nb::value_error((std::string(what) + ": proto parse failed").c_str());
+  }
+  return msg;
+}
+
+nb::bytes SerializeMessage(const pbuf::Message& msg, const char* what) {
+  std::string out;
+  if (!msg.SerializePartialToString(&out)) {
+    throw nb::value_error((std::string(what) + ": proto serialization failed").c_str());
+  }
+  return nb::bytes(out.data(), out.size());
+}
+
+// pxf::BindRow under the caller's options. msg_bytes is what the message
+// holds now; the result is what it holds after the row.
+nb::bytes PxfBindRow(nb::bytes msg_bytes, const std::vector<std::string>& columns,
+                     nb::list cells, nb::bytes fds_bytes, const std::string& full_name,
+                     bool discard_unknown, bool skip_validate, const PxfLimits& limits) {
+  protowire::pxf::UnmarshalOptions opts;
+  ApplyLimits(limits, opts);
+  opts.discard_unknown = discard_unknown;
+  opts.skip_validate = skip_validate;
+  protowire::pxf::DatasetRow row;
+  row.cells.reserve(cells.size());
+  for (nb::handle c : cells) row.cells.push_back(PyCellToValue(c));
+  auto schema = BuildSchema(std::string_view(fds_bytes.c_str(), fds_bytes.size()));
+  const auto* desc = FindDescriptor(schema, full_name);
+  auto msg = NewMessageFrom(schema, desc, msg_bytes, "pxf.bind_row");
+  if (auto st = protowire::pxf::BindRow(msg.get(), columns, row, opts); !st.ok()) {
+    throw nb::value_error(("pxf.bind_row: " + st.ToString()).c_str());
+  }
+  return SerializeMessage(*msg, "pxf.bind_row");
+}
+
 // PXF text -> binary proto bytes.
 nb::bytes PxfUnmarshal(nb::bytes text, nb::bytes fds_bytes,
                        const std::string& full_name, bool discard_unknown,
@@ -311,6 +410,7 @@ class PyDatasetReader {
       throw nb::value_error(("pxf.DatasetReader: " + tr.status().ToString()).c_str());
     }
     out->reader_ = std::move(*tr);
+    out->opts_ = opts;
     // Marshal the side-channel directives once at construction; they're
     // fixed for the reader's lifetime.
     for (const auto& d : out->reader_->Directives()) {
@@ -352,6 +452,40 @@ class PyDatasetReader {
     return RowToList(row);
   }
 
+  // Reads the next row and binds it into a message holding msg_bytes, as
+  // pxf::DatasetReader::Scan does: under the reader's options but
+  // max_message_size, with discard_unknown and skip_validate from the call.
+  // The schema and the column paths are checked once per type. Returns the
+  // bound message's bytes, or None at EOF.
+  nb::object Scan(nb::bytes msg_bytes, nb::bytes fds_bytes, const std::string& full_name,
+                  bool discard_unknown, bool skip_validate) {
+    if (reader_->Done()) return nb::none();
+    protowire::pxf::DatasetRow row;
+    if (auto s = reader_->Next(&row); !s.ok()) {
+      throw nb::value_error(("pxf.DatasetReader.scan: " + s.ToString()).c_str());
+    }
+    if (reader_->Done()) return nb::none();
+    const std::string_view fds(fds_bytes.c_str(), fds_bytes.size());
+    if (!schema_.pool || fds != fds_) {
+      schema_ = BuildSchema(fds);
+      fds_ = std::string(fds);
+      checked_type_ = nullptr;
+    }
+    const auto* desc = FindDescriptor(schema_, full_name);
+    auto msg = NewMessageFrom(schema_, desc, msg_bytes, "pxf.DatasetReader.scan");
+    protowire::pxf::UnmarshalOptions opts = opts_;
+    // A row's bytes were capped as they were read; the body it is bound as
+    // repeats the column names, so it is wider than the row.
+    opts.max_message_size = 0;
+    opts.discard_unknown = discard_unknown;
+    opts.skip_validate = skip_validate || desc == checked_type_;
+    if (auto s = protowire::pxf::BindRow(msg.get(), reader_->Columns(), row, opts); !s.ok()) {
+      throw nb::value_error(("pxf.DatasetReader.scan: " + s.ToString()).c_str());
+    }
+    if (!skip_validate) checked_type_ = desc;
+    return SerializeMessage(*msg, "pxf.DatasetReader.scan");
+  }
+
   // Drains the remaining buffered + underlying bytes. Only meaningful
   // after Done(); the Python wrapper exposes this as a method that
   // returns bytes so callers can chain a second DatasetReader on
@@ -375,6 +509,12 @@ class PyDatasetReader {
   std::unique_ptr<std::istringstream> stream_;
   std::unique_ptr<protowire::pxf::DatasetReader> reader_;
   std::vector<PyDirective> directives_;
+  protowire::pxf::UnmarshalOptions opts_;
+  // Scan's schema, rebuilt when the caller's descriptor set changes, and the
+  // type whose schema it has checked.
+  std::string fds_;
+  SchemaBundle schema_;
+  const pbuf::Descriptor* checked_type_ = nullptr;
 };
 
 // Binary proto bytes -> PXF text. max_nesting_depth is
@@ -591,6 +731,9 @@ NB_MODULE(_protowire, m) {
   m.def("pxf_marshal", &PxfMarshal, "msg_bytes"_a, "fds"_a, "full_name"_a,
         "max_nesting_depth"_a = 0);
   m.def("pxf_validate_descriptor", &PxfValidateDescriptor, "fds"_a, "full_name"_a);
+  m.def("pxf_bind_row", &PxfBindRow, "msg_bytes"_a, "columns"_a, "cells"_a, "fds"_a,
+        "full_name"_a, "discard_unknown"_a = false, "skip_validate"_a = false,
+        "limits"_a = no_limits);
 
   nb::class_<PyDatasetReader>(m, "PxfDatasetReader")
       .def_static("from_bytes", &PyDatasetReader::FromBytes, "data"_a, "limits"_a = no_limits)
@@ -599,6 +742,8 @@ NB_MODULE(_protowire, m) {
       .def_prop_ro("directives", &PyDatasetReader::Directives)
       .def_prop_ro("done", &PyDatasetReader::Done)
       .def("next_or_none", &PyDatasetReader::NextOrNone)
+      .def("scan", &PyDatasetReader::Scan, "msg_bytes"_a, "fds"_a, "full_name"_a,
+           "discard_unknown"_a = false, "skip_validate"_a = false)
       .def("tail", &PyDatasetReader::Tail)
       .def("__iter__", [](PyDatasetReader& self) -> PyDatasetReader& { return self; })
       .def("__next__", &PyDatasetReader::Next);

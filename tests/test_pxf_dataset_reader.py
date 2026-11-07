@@ -192,18 +192,40 @@ def test_bind_row_absent_cell_leaves_default(all_types_cls):
     assert msg.int32_field == 7
 
 
-def test_bind_row_null_clears_wrapper(all_types_cls):
-    # A `null` cell on a wrapper field clears it (draft §3.9).
+def test_bind_row_null_leaves_a_wrapper_unset(all_types_cls):
+    # A `null` cell on a wrapper field leaves it unset and present-but-null
+    # (draft §3.9).
     src = b'@dataset test.v1.AllTypes ( nullable_string )\n( null )\n'
     tr = pxf.DatasetReader.from_bytes(src)
     (row,) = list(tr)
     msg = all_types_cls()
-    msg.nullable_string.value = "stale"  # populate to confirm clear
-    assert msg.HasField("nullable_string")
     pxf.bind_row(msg, tr.columns, row)
-    # nullable_string is a StringValue — after `null`, HasField is False.
     assert not msg.HasField("nullable_string")
 
+
+def test_a_row_binds_into_what_the_message_holds(all_types_cls):
+    # protowire-go does not clear the message before a row, so in a reused
+    # message a field set by an earlier row keeps its value under an empty or
+    # null cell. Measured with protowire-go v1.17.0's Scan on this input: row
+    # 2 kept int32_field 1 and nullable_string "x".
+    src = ('@dataset test.v1.AllTypes (string_field, nullable_string, int32_field)\n'
+           '("a", "x", 1)\n("b", null, )\n')
+    reader = pxf.DatasetReader.from_bytes(src)
+    msg = all_types_cls()
+    assert reader.scan(msg)
+    assert reader.scan(msg)
+    assert (msg.string_field, msg.int32_field, msg.nullable_string.value) == ("b", 1, "x")
+    # A fresh message per row gives each row alone.
+    reader = pxf.DatasetReader.from_bytes(src)
+    assert reader.scan(all_types_cls())
+    fresh = all_types_cls()
+    assert reader.scan(fresh)
+    assert (fresh.string_field, fresh.int32_field) == ("b", 0)
+    assert not fresh.HasField("nullable_string")
+    # bind_row binds the same way.
+    msg = all_types_cls(int32_field=7)
+    pxf.bind_row(msg, ("string_field", "int32_field"), (("string", "c"), None))
+    assert (msg.string_field, msg.int32_field) == ("c", 7)
 
 def test_bind_row_bytes_cell(all_types_cls):
     src = b'@dataset test.v1.AllTypes ( bytes_field )\n( b"YWJj" )\n'  # "abc"

@@ -1,0 +1,119 @@
+== arity-long.pxf
+  row 1 err: 6:1: @dataset row has 3 cells, expected 2 (column count)
+== arity-short.pxf
+  row 1 err: 6:1: @dataset row has 2 cells, expected 3 (column count)
+== block-cell.pxf
+  row 1: 0a05726f772d315a090a05696e6e65721063
+  table test.v1.AllTypes: 1 rows
+== block-on-scalar.pxf
+  row 1 err: 7:1: column int32_field: expected integer for field "int32_field"
+== cell-framing.pxf
+  row 1: 0a05726f772d315a0b0a0761292c2028622c10016202292c6202282c
+  row 2: 0a05726f772d325a0e0a0a7829202279222c20287a10026203656e64
+  table test.v1.AllTypes: 2 rows
+== dotted-bad-header-empty-row.pxf
+  row 1 err: 8:1: @dataset column "picks.name": "picks" is a repeated field, and a column path cannot go through one; use a value cell for "picks" (draft §3.4.4)
+== dotted-bad-header-no-rows.pxf
+  table dataset.v1.Event: 0 rows
+== dotted-column.pxf
+  row 1: 0a05726f772d315a070a05696e6e6572
+  table test.v1.AllTypes: 1 rows
+== dotted-empty-segment.pxf
+  header err: 4:32: @dataset column "desc..energy": a column path has an empty segment (draft §3.4.4)
+== dotted-grouping.pxf
+  row 1: 0a027231121209000000000000e03f1204083c10781a01784801
+  row 2: 0a027232120909000000000000d03f4802
+  row 3: 0a0272334803
+  row 4: 0a0272341204120210094804
+  table dataset.v1.Event: 4 rows
+== dotted-into-any.pxf
+  row 1: 0a01786a2a0a23747970652e676f6f676c65617069732e636f6d2f646174617365742e76312e5069636b12030a0178
+  table dataset.v1.Event: 1 rows
+== dotted-into-bignum.pxf
+  row 1 err: 7:1: @dataset column "big.negative": "big" is a pxf.BigInt, which is written as a literal; a column path cannot go into it (draft §3.4.4)
+== dotted-into-duration.pxf
+  row 1 err: 7:1: @dataset column "dur.seconds": "dur" is a google.protobuf.Duration, which is written as a literal; a column path cannot go into it (draft §3.4.4)
+== dotted-into-secret.pxf
+  row 1: 0a017872150a06733363726574120b64622070617373776f7264
+  table dataset.v1.Event: 1 rows
+== dotted-into-timestamp.pxf
+  row 1 err: 7:1: @dataset column "ts.seconds": "ts" is a google.protobuf.Timestamp, which is written as a literal; a column path cannot go into it (draft §3.4.4)
+== dotted-into-wrapper.pxf
+  row 1 err: 7:1: @dataset column "wrap.value": "wrap" is a google.protobuf.Int32Value, which is written as a literal; a column path cannot go into it (draft §3.4.4)
+== dotted-null-leaf.pxf
+  row 1: 0a016e1200
+  table dataset.v1.Event: 1 rows
+== dotted-oneof-two-members.pxf
+  row 1 err: 7:1: column b.name: oneof "choice": field "b" conflicts with already-set field "a"
+== dotted-oneof.pxf
+  row 1: 32050a01781001
+  row 2: 3a030a0179
+  table dataset.v1.Event: 2 rows
+== dotted-overlap-deep.pxf
+  header err: 6:44: @dataset column "desc.tempo.min_bpm" overlaps column "desc.tempo": a field and a path inside it cannot both be columns (draft §3.4.4)
+== dotted-overlap.pxf
+  header err: 5:38: @dataset column "desc.energy" overlaps column "desc": a field and a path inside it cannot both be columns (draft §3.4.4)
+== dotted-required-missing.pxf
+  row 1 err: 7:1: required field "req.n" is absent
+== dotted-required.pxf
+  row 1: 0a06616273656e74
+  row 2: 0a0373657442080805120464666c74
+  table dataset.v1.Event: 2 rows
+== dotted-through-map.pxf
+  row 1 err: 6:1: @dataset column "by_name.name": "by_name" is a map field, and a column path cannot go through one; use a value cell for "by_name" (draft §3.4.4)
+== dotted-through-repeated.pxf
+  row 1 err: 7:1: @dataset column "picks.name": "picks" is a repeated field, and a column path cannot go through one; use a value cell for "picks" (draft §3.4.4)
+== dotted-through-scalar.pxf
+  row 1 err: 7:1: @dataset column "plain.x": "plain" is not a message field
+== dotted-trailing-dot.pxf
+  header err: 4:32: @dataset column "desc.": a column path has an empty segment (draft §3.4.4)
+== dotted-unknown-segment.pxf
+  row 1 err: 6:1: @dataset column "desc.nope": dataset.v1.Desc has no field "nope"
+== dotted-with-value-cells.pxf
+  row 1: 0a016d121309000000000000e03f1202083c1a01611a01621a030a0170
+  table dataset.v1.Event: 1 rows
+== duplicate-column.pxf
+  header err: 4:42: @dataset column "string_field" appears twice (draft §3.4.4)
+== empty-rows.pxf
+  table test.v1.AllTypes: 0 rows
+== junk-between-rows.pxf
+  row 1: 0a05726f772d311001
+  row 2 err: 8:1: @dataset directive cannot coexist with top-level field entries; the document's payload is the @dataset rows (draft §3.4.4)
+== list-cell.pxf
+  row 1: 0a05726f772d316205616c706861620462657461
+  table test.v1.AllTypes: 1 rows
+== nested-cells.pxf
+  row 1: 0a05726f772d3110015a060a026e3110016201616201626a030a01786a050a0179100272060a016b120176
+  row 2: 0a05726f772d3210025a00
+  row 3: 0a05726f772d331003
+  row 4: 0a05726f772d341004
+  table test.v1.AllTypes: 4 rows
+== null-on-optional-cell.pxf
+  row 1: 0a01617801
+  row 2: 0a0162
+  table dataset.v1.Event: 2 rows
+== null-on-required-cell.pxf
+  row 1: 0a01611001
+  row 2 err: 9:1: column o: null is not allowed on required field "o": a required field holds a value
+== null-on-scalar-cell.pxf
+  row 1: 0a01611001
+  row 2 err: 8:1: column int32_field: null is not allowed on scalar field "int32_field": declare it optional, or as a wrapper type (google.protobuf.Int32Value or similar), to make it nullable
+== rows-end-at-directive.pxf
+  row 1: 0a05726f772d311001
+  row 2: 0a05726f772d321002
+  table test.v1.AllTypes: 2 rows
+  row 1: 0a05726f772d335001
+  table test.v1.AllTypes: 1 rows
+== string-newline-in-cell.pxf
+  row 1 err: 7:2: newline in string literal: write it as \n, or use a """triple-quoted""" string
+== truncated-row-eof.pxf
+  row 1: 0a05726f772d311001
+  row 2 err: 10:1: expected ',' or ')' in @dataset row, got EOF
+== truncated-row-then-rows.pxf
+  row 1: 0a05726f772d311001
+  row 2 err: 9:1: expected ',' or ')' in @dataset row, got (
+== with-body.pxf
+  row 1: 0a05726f772d311001
+  row 2 err: 9:1: @dataset directive cannot coexist with top-level field entries; the document's payload is the @dataset rows (draft §3.4.4)
+== with-type.pxf
+  header err: 6:1: @dataset directive cannot coexist with @type; the @dataset header declares the document's type (draft §3.4.4)
