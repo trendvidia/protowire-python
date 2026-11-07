@@ -8,7 +8,7 @@ Driven by ``protowire/scripts/cross_security_check.sh``. See
 
 Contract::
 
-    check_decode.py --format <pxf|pb|pb-render|sbe|envelope> \\
+    check_decode.py --format <pxf|pxf-pb|pb|pb-render|pb-text|sbe|envelope> \\
                     --schema <fully.qualified.MessageType> \\
                     --proto  <path-to-adversarial.proto> \\
                     --input  <path> \\
@@ -19,6 +19,10 @@ Contract::
               stderr line is "reject: <msg>")
     Exit 2 -> the harness could not run the row, or the decoder failed in a
               way that is not a clean error. The gate reads this as a crash.
+
+pxf-pb and pb-text also write their output on stdout, for the write gate and
+the text gate (``protowire/scripts/cross_write_check.sh`` and
+``cross_text_check.sh``), as the Go reference's harness does.
 
 Python exits 1 on an uncaught exception, the same code as a reject, so main()
 turns anything unexpected into exit 2. A row must never pass because the
@@ -37,17 +41,28 @@ What each format exercises:
   rows test the protowire-cpp encoder. The bridge reads the bytes one level
   deeper than the encoder's limit, leaving the encoder to refuse. A read that
   fails is not a reject of the row: the encoder never ran.
+- pxf-pb decodes the PXF with ``pxf.unmarshal_full``, which applies
+  (pxf.default) and checks (pxf.required), and writes the message's PB bytes
+  with map entries in key order, as protowire-go's deterministic writer puts
+  them. The protobuf runtime does not: with ``deterministic=True``, upb wrote
+  the int32 keys -1, 0, 10, 9 as -1, 10, 9, 0. So the harness writes each map
+  entry itself (``_sorted_bytes``) and leaves every other field to the
+  runtime. The write gate compares the bytes with protowire-go's.
+- pb-text reads the bytes with the protobuf runtime and writes
+  ``pxf.marshal``'s text, so the text gate compares the protowire-cpp
+  encoder's output alone with protowire-go's.
 - envelope is reported as a rejection, as in the Go reference. The corpus has
   no envelope rows.
 
-Schemas come from the ``adversarial.binpb`` FileDescriptorSet next to
-``--proto``, since the Python runtime cannot compile a .proto. The corpus
-generator writes both, so there are no hand-written bindings to keep in step
-with the corpus.
+Schemas come from the FileDescriptorSet next to ``--proto`` (``adversarial.binpb``
+beside ``adversarial.proto``, ``text.binpb`` beside ``text.proto``), since the
+Python runtime cannot compile a .proto. The spec's generators write both, so
+there are no hand-written bindings to keep in step with the corpus.
 
 ``--limit MaxMessageSize=1024`` sets one HARDENING limit for the row, under
 the Go name the manifest uses. pxf rows take all six, sbe rows
-MaxMessageSize and MaxRepeatedCount, and pb-render MaxNestingDepth. A limit
+MaxMessageSize and MaxRepeatedCount, and pb-render MaxNestingDepth. pxf-pb
+takes the six, as pxf does, and pb-text none, as in the Go reference. A limit
 this port cannot apply to the row's format exits 2: running the row without
 it would not test the limit. pb rows take none, since the protobuf runtime
 has no such settings.
@@ -56,6 +71,7 @@ has no such settings.
 from __future__ import annotations
 
 import argparse
+import struct
 import sys
 from pathlib import Path
 
@@ -98,9 +114,11 @@ _LIMITS = {
 # The limits each format can apply. pb has none: see the module docstring.
 _FORMAT_LIMITS = {
     "pxf": set(_LIMITS.values()),
+    "pxf-pb": set(_LIMITS.values()),
     "sbe": {"max_message_size", "max_repeated_count"},
     "pb-render": {"max_nesting_depth"},
     "pb": set(),
+    "pb-text": set(),
     "envelope": set(),
 }
 
@@ -123,6 +141,116 @@ def _decode_pxf(fds_bytes: bytes, schema: str, data: bytes, limits: dict[str, in
         pxf.unmarshal_bytes(data, fds_bytes, schema, **limits)
     except ValueError as e:
         return _reject(f"pxf: {e}")
+    return 0
+
+
+_LEN = 2  # wire type of a length-delimited record
+
+
+def _varint(n: int) -> bytes:
+    out = bytearray()
+    while n > 0x7F:
+        out.append(n & 0x7F | 0x80)
+        n >>= 7
+    out.append(n)
+    return bytes(out)
+
+
+def _record(number: int, payload: bytes) -> bytes:
+    return _varint(number << 3 | _LEN) + _varint(len(payload)) + payload
+
+
+def _entry_field(fd, value) -> bytes:
+    """A map entry's key or value, written even when it is zero, as Go
+    writes both."""
+    t, n = fd.type, fd.number
+    if t in (fd.TYPE_STRING, fd.TYPE_BYTES):
+        raw = value.encode("utf-8") if t == fd.TYPE_STRING else bytes(value)
+        return _record(n, raw)
+    if t in (fd.TYPE_INT32, fd.TYPE_INT64, fd.TYPE_ENUM):
+        return _varint(n << 3) + _varint(value & 0xFFFFFFFFFFFFFFFF)
+    if t in (fd.TYPE_UINT32, fd.TYPE_UINT64):
+        return _varint(n << 3) + _varint(value)
+    if t == fd.TYPE_BOOL:
+        return _varint(n << 3) + _varint(int(value))
+    if t in (fd.TYPE_SINT32, fd.TYPE_SINT64):
+        return _varint(n << 3) + _varint((value << 1) ^ (value >> 63))
+    fixed = {
+        fd.TYPE_FIXED32: "<I", fd.TYPE_SFIXED32: "<i", fd.TYPE_FLOAT: "<f",
+        fd.TYPE_FIXED64: "<Q", fd.TYPE_SFIXED64: "<q", fd.TYPE_DOUBLE: "<d",
+    }[t]
+    wire = 5 if struct.calcsize(fixed) == 4 else 1
+    return _varint(n << 3 | wire) + struct.pack(fixed, value)
+
+
+def _only(msg, name: str, value) -> bytes:
+    """The bytes the runtime writes for one non-message field of msg's type."""
+    tmp = type(msg)()
+    field = getattr(tmp, name)
+    if isinstance(value, list):
+        field.extend(value)
+    else:
+        setattr(tmp, name, value)
+    return tmp.SerializeToString()
+
+
+def _repeated(fd) -> bool:
+    # protobuf 7 removed FieldDescriptor.label; older runtimes lack is_repeated.
+    if hasattr(fd, "is_repeated"):
+        return fd.is_repeated
+    return fd.label == fd.LABEL_REPEATED
+
+
+def _sorted_bytes(msg) -> bytes:
+    """msg's PB bytes, fields in number order and map entries in key order,
+    nested maps included."""
+    out = bytearray()
+    for fd, value in sorted(msg.ListFields(), key=lambda fv: fv[0].number):
+        is_message = fd.type == fd.TYPE_MESSAGE
+        if is_message and fd.message_type.GetOptions().map_entry:
+            key_fd = fd.message_type.fields_by_name["key"]
+            val_fd = fd.message_type.fields_by_name["value"]
+            for k in sorted(value):
+                entry = bytearray(_entry_field(key_fd, k))
+                v = value[k]
+                if val_fd.type == val_fd.TYPE_MESSAGE:
+                    entry += _record(2, _sorted_bytes(v))
+                else:
+                    entry += _entry_field(val_fd, v)
+                out += _record(fd.number, bytes(entry))
+        elif is_message and _repeated(fd):
+            for v in value:
+                out += _record(fd.number, _sorted_bytes(v))
+        elif is_message:
+            out += _record(fd.number, _sorted_bytes(value))
+        else:
+            out += _only(msg, fd.name, list(value) if _repeated(fd) else value)
+    return bytes(out)
+
+
+def _pxf_pb(fds_bytes: bytes, schema: str, data: bytes, limits: dict[str, int]) -> int:
+    msg = _message_class(fds_bytes, schema)()
+    try:
+        pxf.unmarshal_full(data, msg, **limits)
+    except ValueError as e:
+        return _reject(f"pxf-pb: {e}")
+    sys.stdout.buffer.write(_sorted_bytes(msg))
+    sys.stdout.buffer.flush()
+    return 0
+
+
+def _pb_text(fds_bytes: bytes, schema: str, data: bytes, limits: dict[str, int]) -> int:
+    msg = _message_class(fds_bytes, schema)()
+    try:
+        msg.ParseFromString(data)
+    except DecodeError as e:
+        return _reject(f"pb-text: {e}")
+    try:
+        text = pxf.marshal(msg)
+    except ValueError as e:
+        return _reject(f"pb-text: {e}")
+    sys.stdout.buffer.write(text.encode("utf-8"))
+    sys.stdout.buffer.flush()
     return 0
 
 
@@ -167,6 +295,8 @@ def _run(args: argparse.Namespace) -> int:
         return _reject("envelope decode is not implemented in this harness")
     decode = {
         "pxf": _decode_pxf,
+        "pxf-pb": _pxf_pb,
+        "pb-text": _pb_text,
         "pb": _decode_pb,
         "pb-render": _pb_render,
         "sbe": _decode_sbe,
@@ -177,7 +307,7 @@ def _run(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="check_decode")
-    p.add_argument("--format", required=True, choices=["pxf", "pb", "pb-render", "sbe", "envelope"])
+    p.add_argument("--format", required=True, choices=["pxf", "pxf-pb", "pb", "pb-render", "pb-text", "sbe", "envelope"])
     p.add_argument("--schema", required=True)
     p.add_argument("--proto", required=True)
     p.add_argument("--input", required=True)

@@ -73,6 +73,17 @@ format changes.
 
 ### Added
 
+- **`scripts/check_decode.py --format pxf-pb` and `--format pb-text`** (#35,
+  #37), so the spec's write gate and text gate run this port.
+  - `pxf-pb` decodes with `unmarshal_full` and writes the PB bytes, with map
+    entries in key order as protowire-go writes them.
+  - `pb-text` reads the bytes with the protobuf runtime and writes
+    `pxf.marshal`'s text.
+  - Both pass every case of both gates, with no exclusions: 87 write cases
+    and 60 text cases.
+  - The protobuf runtime (upb, protobuf 7.36.2) ignores `deterministic=True`
+    for map order, so the harness writes map entries itself.
+
 - **`Violation.kind` values `"default_option"`, `"retired_number"` and
   `"well_known_shape"`,** for the bind-time checks above. They came back as
   `""`.
