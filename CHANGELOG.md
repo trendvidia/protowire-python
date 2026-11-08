@@ -28,8 +28,8 @@ format changes.
 - **`check_decode --format pb` decodes through `protowire.pb`**, into
   dataclasses mirroring `adversarial.proto`, as Go's harness decodes through
   its `encoding/pb`. It takes every `--limit` but `MaxBytesLiteralLength`. All
-  29 of the corpus's `pb` rows pass, the 16 that skip Python today included,
-  with the same verdict as protowire-go's harness on each.
+  29 of the corpus's `pb` rows pass, with the same verdict as protowire-go's
+  harness on each, and protowire#591 runs Python on the 16 that skipped it.
 
 ### Changed
 
@@ -131,13 +131,12 @@ format changes.
   negative value is a `ValueError`. `sbe.Codec` and `Codec.from_message` take
   `max_message_size` and `max_repeated_count` for every call, as
   protowire-cpp's `sbe::CodecOptions` does. `DatasetReader.scan` binds each
-  row under the reader's limits. Two caveats: the decoded message still loads
-  through the protobuf runtime, which stops at 100 levels of submessages (#40),
-  and the reader parses rows under the default `max_bytes_literal_length`
-  until protowire-cpp#160 is fixed (`scan` still applies it when binding).
+  row under the reader's limits, and the reader parses each row under its own
+  `max_bytes_literal_length` (see Fixed, protowire-cpp#160). A
+  `max_nesting_depth` raised past 100 loads too (see Fixed, #40).
 - **`scripts/check_decode.py --limit Name=N`**, so the corpus rows that lower
-  a limit run on this port. pb rows take none: the protobuf runtime has no
-  such settings, and such a row exits 2.
+  a limit run on this port. A limit the row's format has no setting for
+  exits 2, so the row cannot pass as a reject.
 - **`max_nesting_depth` on `pxf.marshal` and `pxf.marshal_bytes`** (#34,
   protowire#502), the deepest PXF they write, counted as a decoder counts it.
   0, the default, means 100. Raise it only together with the limit of every
@@ -173,7 +172,7 @@ format changes.
   at protobuf's own limit before the encoder ran. A message two or more levels
   too deep still fails in that read, and its error now names the depth. A
   Timestamp or other literal at the limit is written: it is one protobuf
-  level but no PXF level. Reading such a document back fails in upb (#40).
+  level but no PXF level, and it reads back (see the #40 entry below).
 - **`scripts/check_decode.py --format pb-render` no longer reads the input
   with the stock protobuf reader first.** That reader stops at 100 levels, so
   the corpus's 101-level rows never reached the encoder. A read that fails
