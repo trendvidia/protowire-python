@@ -82,3 +82,14 @@ def all_types_cls(test_pool):
 def nested_cls(test_pool):
     desc = test_pool.FindMessageTypeByName("test.v1.Nested")
     return message_factory.GetMessageClass(desc)
+
+
+@pytest.fixture(scope="session")
+def pb_oracle_pool() -> descriptor_pool.DescriptorPool:
+    """The oracle schemas for protowire.pb: testdata/pb/conf.proto and bignum.proto."""
+    fds = descriptor_pb2.FileDescriptorSet()
+    fds.ParseFromString(_protoc_to_fds(["conf.proto", "bignum.proto"], [str(TESTDATA_DIR / "pb")]))
+    pool = descriptor_pool.DescriptorPool()
+    for f in fds.file:
+        pool.Add(f)
+    return pool
