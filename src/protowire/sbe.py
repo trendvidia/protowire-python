@@ -9,7 +9,7 @@ from typing import Iterable
 from google.protobuf.descriptor import FileDescriptor
 from google.protobuf.message import Message
 
-from . import _protowire
+from . import _protowire, _upb
 from ._schema import fds_for_files
 
 
@@ -120,8 +120,7 @@ class Codec:
 
     def unmarshal(self, data: bytes, msg: Message) -> None:
         raw = self._impl.unmarshal(bytes(data), msg.DESCRIPTOR.full_name)
-        msg.Clear()
-        msg.MergeFromString(raw)
+        _upb.load(msg, raw)
 
     def view(self, data: bytes) -> View:
         return View(self._impl.new_view(bytes(data)))

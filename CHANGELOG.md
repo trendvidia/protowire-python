@@ -33,6 +33,21 @@ format changes.
 
 ### Changed
 
+- **A row read as cells keeps its list and block values and its precision
+  suffixes** (#47), as protowire-go's `DatasetRow` keeps them. So a row from
+  `DatasetReader.next_or_none`, iteration or `Result.datasets`, passed to
+  `bind_row`, binds as `DatasetReader.scan` binds it. Before, a list or block
+  cell came back as `("unknown", None)` and `bind_row` refused it, and `1.5p80`
+  came back as `("float", "1.5")`, losing its precision. The public `Cell` type
+  changes:
+  - New kinds `("list", [cell, ...])` and `("block", [entry, ...])`. An entry
+    is a `(kind, key, value, quoted)` tuple of kind `"field"` (`k = v`),
+    `"map"` (`k: v`), `"block"` (`k { ... }`) or `"type"` (`@type = "url"`).
+    `quoted` records a key written as a string literal.
+  - An `"int"` or `"float"` cell's raw text keeps its precision suffix:
+    `("float", "1.5p80")`. **`float(cell[1])` now raises on such a cell**,
+    where before it silently dropped the precision.
+
 - **`pxf.bind_row` and `DatasetReader.scan` bind a row as protowire-go does**
   (#24), through protowire-cpp's `BindRow` rather than writing the row out as
   text and decoding it with `unmarshal`. On all 43 of the spec's
@@ -41,8 +56,8 @@ format changes.
   differently. What changes:
   - An absent cell takes the field's `(pxf.default)`. An absent
     `(pxf.required)` field is an error, as in `unmarshal_full`.
-  - A cell may hold a list or a block (`scan` only; see #47 for rows read as
-    cells), and a column may be a dotted path into a sub-message.
+  - A cell may hold a list or a block, and a column may be a dotted path
+    into a sub-message.
   - **A row binds into what the message already holds,** which is no longer
     cleared first. In a reused message, a field an earlier row set keeps its
     value under an empty or `null` cell, as in Go. Bind each row into a new or
@@ -163,6 +178,27 @@ format changes.
   with the stock protobuf reader first.** That reader stops at 100 levels, so
   the corpus's 101-level rows never reached the encoder. A read that fails
   still exits 2.
+
+- **A document at the depth limit with a well-known-type literal at the
+  bottom now decodes** (#40), as protowire-go decodes it and as
+  trendvidia/protowire#537 decided. Before, `pxf.unmarshal` and the other
+  decoders raised upb's `DecodeError` on it. The native decoder returns PB
+  bytes, and a Timestamp written as a literal is no PXF level but one PB
+  level, so 100 PXF levels can be 101 PB levels, one past upb's limit. The
+  same fix makes a `max_nesting_depth` raised past 100 work. When upb refuses
+  the bytes for depth alone, they are parsed again with upb's limit lifted
+  (`SetAllowOversizeProtos`), which is then restored to what it was. The
+  caller's `max_nesting_depth` is still enforced by the native decoder.
+  Caveat: upb's switch is process-wide, so another thread's parse during that
+  retry also gets the lifted limit.
+- **The macOS wheel's support floor no longer depends on the CI runner's
+  macOS** (#20). protobuf and abseil are now built from source at
+  `MACOSX_DEPLOYMENT_TARGET` and linked statically
+  (`scripts/cibw_install_protobuf.sh`, which replaces
+  `cibw_install_protobuf_linux.sh`), instead of taken from Homebrew bottles
+  built for the runner. The wheel-building runners are back on
+  `macos-latest`. The floor is unchanged at macOS 15.0. macOS builds
+  protobuf v36.2; Linux stays on v25.3.
 
 ## [1.1.0] — 2026-10-31
 
