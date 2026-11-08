@@ -60,6 +60,42 @@ e = envelope.Err(400, "VALIDATION", "bad input").error.with_field(
 )
 ```
 
+### PB for plain classes
+
+`protowire.pb` is a port of protowire-go's `encoding/pb`: protobuf binary for
+dataclasses, with no `.proto` and no generated code. Each field names its
+number, and its protobuf type where the Python type does not say it. The bytes
+are protowire-go's, and decoding is bounded by the same per-call limits.
+
+```python
+from dataclasses import dataclass, field
+from decimal import Decimal
+from typing import Annotated, Optional
+from protowire import pb
+
+@dataclass
+class Order:
+    id: Annotated[int, pb.Field(1, pb.UINT64)] = 0
+    symbol: Annotated[str, pb.Field(2)] = ""
+    qty: Annotated[int, pb.Field(3, pb.SINT32)] = 0      # zigzag, Go's `protowire:"3,zigzag"`
+    price: Annotated[Optional[Decimal], pb.Field(4)] = None  # pxf.Decimal
+    tags: Annotated[list[str], pb.Field(5)] = field(default_factory=list)
+
+data = pb.marshal(Order(id=7, symbol="ACME", qty=-100, price=Decimal("12.50")))
+order = pb.unmarshal(data, Order, max_message_size=1 << 20)
+
+# Length-prefixed streams, as Go's pb.Encoder / pb.Decoder frame them.
+pb.Encoder(out).encode(order)
+dec = pb.Decoder(inp)
+while (o := dec.decode(Order)) is not None:
+    ...
+```
+
+`int` is int64 unless the field says otherwise (`pb.INT32`, `pb.UINT32`,
+`pb.UINT64`, `pb.SINT32`, `pb.SINT64`, or `pb.BIGINT` for `pxf.BigInt`);
+`float` is double unless `pb.FLOAT`. `decimal.Decimal` is `pxf.Decimal` and
+`pb.BigFloat` is `pxf.BigFloat`. See the module docstring for the rest.
+
 ## Build from source
 
 ```sh
@@ -123,6 +159,11 @@ cross-port equivalence guarantees.
 - **No standalone Python CLI.** The shared CLI lives in
   [trendvidia/protowire/cmd/protowire](https://github.com/trendvidia/protowire/tree/main/cmd/protowire);
   Python callers either invoke that binary or use the in-process API.
+- **`protowire.pb` is pure Python.** protowire-cpp's PB codec is C++
+  templates over C++ structs, so there is nothing native to call on a
+  dataclass. It is slower than the native PXF and SBE paths. A message nested
+  past Python's recursion limit is a `ValueError`, so a `max_nesting_depth`
+  raised past a few hundred needs `sys.setrecursionlimit` raised with it.
 - **Free-threaded Python (PEP 703 / 3.13t)** is untested. nanobind supports
   it but the build hasn't been validated against `--disable-gil` interpreters.
 
