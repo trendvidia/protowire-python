@@ -74,6 +74,7 @@ from __future__ import annotations
 
 import dataclasses
 import decimal
+import math
 import struct
 import sys
 import types
@@ -593,8 +594,8 @@ def _float_bits(k: Kind, v: Any) -> bytes:
     # A NaN is written as the canonical quiet NaN whatever its payload, as Go
     # writes it (draft -01 § Numeric Literals; protowire-java#161).
     if k is DOUBLE:
-        return b"\x00\x00\x00\x00\x00\x00\xf8\x7f" if v != v else struct.pack("<d", v)
-    if v != v:
+        return b"\x00\x00\x00\x00\x00\x00\xf8\x7f" if math.isnan(v) else struct.pack("<d", v)
+    if math.isnan(v):
         return b"\x00\x00\xc0\x7f"
     try:
         return struct.pack("<f", v)
@@ -1214,8 +1215,9 @@ class Decoder:
         return e
 
     def decode(self, obj: Union[C, type[C]]) -> Optional[C]:
-        if self._err is not None:
-            raise self._err
+        err = self._err
+        if err is not None:
+            raise err
         # encoding/binary.ReadUvarint: ten bytes at most, the tenth one bit.
         n = 0
         shift = 0
