@@ -13,7 +13,7 @@ from typing import Literal, Union
 
 from google.protobuf.message import Message
 
-from . import _protowire
+from . import _protowire, _upb
 from ._schema import fds_for_message
 
 
@@ -343,8 +343,7 @@ def unmarshal(
             max_bytes_literal_length, max_repeated_count, max_big_float_exponent,
         ),
     )
-    msg.Clear()
-    msg.MergeFromString(raw)
+    _upb.load(msg, raw)
 
 
 def unmarshal_full(
@@ -375,8 +374,7 @@ def unmarshal_full(
             max_bytes_literal_length, max_repeated_count, max_big_float_exponent,
         ),
     )
-    msg.Clear()
-    msg.MergeFromString(raw)
+    _upb.load(msg, raw)
     return _wrap_result(set_paths, null_paths, dirs, tables, protos)
 
 
@@ -577,8 +575,7 @@ class DatasetReader:
         )
         if raw is None:
             return False
-        msg.Clear()
-        msg.MergeFromString(raw)
+        _upb.load(msg, raw)
         return True
 
 
@@ -636,8 +633,7 @@ def bind_row(
             max_bytes_literal_length, max_repeated_count, max_big_float_exponent,
         ),
     )
-    msg.Clear()
-    msg.MergeFromString(raw)
+    _upb.load(msg, raw)
 
 
 def _native_cell(cell: Cell | None):
