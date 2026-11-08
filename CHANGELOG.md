@@ -28,7 +28,7 @@ format changes.
 - **`check_decode --format pb` decodes through `protowire.pb`**, into
   dataclasses mirroring `adversarial.proto`, as Go's harness decodes through
   its `encoding/pb`. It takes every `--limit` but `MaxBytesLiteralLength`. All
-  29 of the corpus's `pb` rows pass, the 18 that skip Python today included,
+  29 of the corpus's `pb` rows pass, the 16 that skip Python today included,
   with the same verdict as protowire-go's harness on each.
 
 ### Changed
