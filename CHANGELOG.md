@@ -11,6 +11,26 @@ format changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`protowire.pb`, a PB codec for dataclasses** (#36, #34): a port of
+  protowire-go's `encoding/pb`. Fields are declared with
+  `Annotated[T, pb.Field(number, kind)]`; `pb.marshal`, `pb.unmarshal` and the
+  length-prefixed `pb.Encoder` / `pb.Decoder` write and read protowire-go's
+  bytes, big numbers included (`decimal.Decimal` for `pxf.Decimal`,
+  `pb.BigFloat` for `pxf.BigFloat`, `pb.BIGINT` for `pxf.BigInt`). Decoding
+  takes Go's per-call limits as keyword arguments (`max_message_size`,
+  `max_nesting_depth`, `max_numeric_literal_digits`, `max_repeated_count`,
+  `max_big_float_exponent`; 0 for the default), and `marshal` refuses a value
+  nested past `max_nesting_depth`. Go's `encoding/pb` tests are ported with
+  their byte vectors, and the conformance tests check the bytes against the
+  protobuf runtime both ways.
+- **`check_decode --format pb` decodes through `protowire.pb`**, into
+  dataclasses mirroring `adversarial.proto`, as Go's harness decodes through
+  its `encoding/pb`. It takes every `--limit` but `MaxBytesLiteralLength`. All
+  29 of the corpus's `pb` rows pass, the 16 that skip Python today included,
+  with the same verdict as protowire-go's harness on each.
+
 ### Changed
 
 - **A row read as cells keeps its list and block values and its precision

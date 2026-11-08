@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+//
+// pxf/bignum.proto, as protowire-go's encoding/pb/bignum_conformance_test.go
+// states it: the oracle schema for the big-number messages.
+syntax = "proto3";
+package pxf;
+
+message BigInt {
+  bytes abs = 1;
+  bool negative = 2;
+}
+
+message Decimal {
+  bytes unscaled = 1;
+  int32 scale = 2;
+  bool negative = 3;
+}
+
+message BigFloat {
+  bytes mantissa = 1;
+  int32 exponent = 2;
+  uint32 prec = 3;
+  bool negative = 4;
+}
