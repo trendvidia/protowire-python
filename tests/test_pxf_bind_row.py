@@ -303,3 +303,79 @@ def test_every_spec_dataset_fixture_streams_as_go():
     for f in fds.file:
         pool.Add(f)
     assert _stream_all(pool) == GOLDEN.read_text()
+
+
+# --- a row read as cells binds as scan binds it (#47) -------------------------
+#
+# Cells keep what protowire-go's DatasetRow keeps: a list's elements, a
+# block's entries, a number's precision suffix. So a row read with
+# next_or_none and passed to bind_row gives scan's message, which is Go's.
+
+_CELL_FIXTURES = ("list-cell", "block-cell", "nested-cells", "cell-framing")
+
+
+@pytest.mark.parametrize("fixture", _CELL_FIXTURES)
+def test_a_row_read_as_cells_binds_as_scan_binds_it(all_types_cls, fixture):
+    reader = pxf.DatasetReader.from_bytes(_FIXTURES[fixture])
+    got = []
+    for row in reader:
+        msg = all_types_cls()
+        pxf.bind_row(msg, reader.columns, row)
+        got.append(msg.SerializeToString(deterministic=True).hex())
+    assert got == _ACCEPT[fixture]
+
+
+def test_list_and_block_cells_keep_their_parts():
+    row = pxf.DatasetReader.from_bytes(
+        '@dataset x.R (a, b)\n'
+        '([1, "s", [2]], { @type = "t/x" k = 1 m { n = 2 } "q": 3 r: null })\n'
+    ).next_or_none()
+    assert row == (
+        ("list", [("int", "1"), ("string", "s"), ("list", [("int", "2")])]),
+        ("block", [
+            ("type", "t/x", None, False),
+            ("field", "k", ("int", "1"), False),
+            ("block", "m", [("field", "n", ("int", "2"), False)], False),
+            ("map", "q", ("int", "3"), True),
+            ("map", "r", ("null", None), False),
+        ]),
+    )
+
+
+def _bigfloat_holder():
+    F = descriptor_pb2.FieldDescriptorProto
+    bignum = descriptor_pb2.FileDescriptorProto(name="pxf/bignum.proto", package="pxf",
+                                                syntax="proto3")
+    bf = bignum.message_type.add(name="BigFloat")
+    bf.field.add(name="mantissa", number=1, type=F.TYPE_BYTES)
+    bf.field.add(name="exponent", number=2, type=F.TYPE_INT32)
+    bf.field.add(name="prec", number=3, type=F.TYPE_UINT32)
+    bf.field.add(name="negative", number=4, type=F.TYPE_BOOL)
+    fd = descriptor_pb2.FileDescriptorProto(name="bf.proto", package="bf", syntax="proto3")
+    fd.dependency.append("pxf/bignum.proto")
+    h = fd.message_type.add(name="H")
+    h.field.add(name="f", number=1, type=F.TYPE_MESSAGE, type_name=".pxf.BigFloat")
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(bignum)
+    pool.Add(fd)
+    return message_factory.GetMessageClass(pool.FindMessageTypeByName("bf.H"))
+
+
+def test_a_precision_suffix_survives_the_cell():
+    holder = _bigfloat_holder()
+    src = "@dataset bf.H (f)\n(1.5p80)\n"
+    reader = pxf.DatasetReader.from_bytes(src)
+    row = reader.next_or_none()
+    assert row == (("float", "1.5p80"),)
+    from_cells = holder()
+    pxf.bind_row(from_cells, reader.columns, row)
+    scanned = holder()
+    assert pxf.DatasetReader.from_bytes(src).scan(scanned)
+    assert from_cells.f.prec == 80
+    assert from_cells.SerializeToString(deterministic=True) == \
+        scanned.SerializeToString(deterministic=True)
+
+
+def test_a_list_element_cannot_be_absent(all_types_cls):
+    with pytest.raises(ValueError, match="list element cannot be absent"):
+        pxf.bind_row(all_types_cls(), ("repeated_string",), (("list", [None]),))

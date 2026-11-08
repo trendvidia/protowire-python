@@ -85,20 +85,56 @@ const pbuf::Descriptor* FindDescriptor(const SchemaBundle& s,
 
 // CellToPyTuple converts a single AST cell value (or std::nullopt for an
 // absent cell) into the FFI shape consumed by pxf.py — `None` for absent,
-// `(kind, value)` otherwise. Used by PxfUnmarshalFull for @dataset rows.
+// `(kind, value)` otherwise. It keeps everything protowire-go's DatasetRow
+// cell keeps (#47).
 //
 // kind values mirror the AST variant tags:
 //   "null"      → nb::none()
 //   "string"    → str  (already-unescaped UTF-8)
-//   "int"       → str  (raw integer text — Python wrapper decides parse)
-//   "float"     → str  (raw float text)
+//   "int"       → str  (raw integer text, its precision suffix included:
+//   "float"     → str   "1.5p80". The parser keeps the suffix apart, in
+//                        prec; PXF numbers are decimal, so the 'p' is
+//                        unambiguous and PyCellToValue splits it off again.)
 //   "bool"      → bool
 //   "bytes"     → bytes
 //   "ident"     → str
 //   "timestamp" → str  (raw RFC3339)
 //   "duration"  → str  (raw duration)
-nb::object CellToPyTuple(const std::optional<protowire::pxf::ValuePtr>& cell) {
-  if (!cell.has_value()) return nb::none();
+//   "list"      → list of cells (an element is never absent)
+//   "block"     → list of entries, each (kind, key, value, quoted):
+//                   ("field", name, cell, quoted)   name = value
+//                   ("map", key, cell, quoted)      key: value
+//                   ("block", name, [entry, ...], quoted)  name { ... }
+//                   ("type", url, None, False)      @type = "url"
+//                 quoted records a key written as a string literal.
+nb::object ValueToPy(const protowire::pxf::ValuePtr& value);
+
+nb::object EntryToPy(const protowire::pxf::EntryPtr& entry) {
+  using namespace protowire::pxf;
+  return std::visit(
+      [](const auto& p) -> nb::object {
+        using T = std::decay_t<decltype(*p)>;
+        if constexpr (std::is_same_v<T, Assignment>) {
+          return nb::make_tuple(std::string("field"), p->key, ValueToPy(p->value), p->key_quoted);
+        } else if constexpr (std::is_same_v<T, MapEntry>) {
+          return nb::make_tuple(std::string("map"), p->key, ValueToPy(p->value), p->key_quoted);
+        } else if constexpr (std::is_same_v<T, Block>) {
+          nb::list entries;
+          for (const auto& e : p->entries) entries.append(EntryToPy(e));
+          return nb::make_tuple(std::string("block"), p->name, entries, p->name_quoted);
+        } else {
+          static_assert(std::is_same_v<T, TypeEntry>);
+          return nb::make_tuple(std::string("type"), p->url, nb::none(), false);
+        }
+      },
+      entry);
+}
+
+std::string WithPrec(const std::string& raw, const std::string& prec) {
+  return prec.empty() ? raw : raw + "p" + prec;
+}
+
+nb::object ValueToPy(const protowire::pxf::ValuePtr& value) {
   using namespace protowire::pxf;
   return std::visit(
       [](const auto& p) -> nb::object {
@@ -108,9 +144,9 @@ nb::object CellToPyTuple(const std::optional<protowire::pxf::ValuePtr>& cell) {
         } else if constexpr (std::is_same_v<T, StringVal>) {
           return nb::make_tuple(std::string("string"), p->value);
         } else if constexpr (std::is_same_v<T, IntVal>) {
-          return nb::make_tuple(std::string("int"), p->raw);
+          return nb::make_tuple(std::string("int"), WithPrec(p->raw, p->prec));
         } else if constexpr (std::is_same_v<T, FloatVal>) {
-          return nb::make_tuple(std::string("float"), p->raw);
+          return nb::make_tuple(std::string("float"), WithPrec(p->raw, p->prec));
         } else if constexpr (std::is_same_v<T, BoolVal>) {
           return nb::make_tuple(std::string("bool"), p->value);
         } else if constexpr (std::is_same_v<T, BytesVal>) {
@@ -123,13 +159,26 @@ nb::object CellToPyTuple(const std::optional<protowire::pxf::ValuePtr>& cell) {
           return nb::make_tuple(std::string("timestamp"), p->raw);
         } else if constexpr (std::is_same_v<T, DurationVal>) {
           return nb::make_tuple(std::string("duration"), p->raw);
+        } else if constexpr (std::is_same_v<T, ListVal>) {
+          nb::list elements;
+          for (const auto& e : p->elements) elements.append(ValueToPy(e));
+          return nb::make_tuple(std::string("list"), elements);
+        } else if constexpr (std::is_same_v<T, BlockVal>) {
+          nb::list entries;
+          for (const auto& e : p->entries) entries.append(EntryToPy(e));
+          return nb::make_tuple(std::string("block"), entries);
         } else {
-          // List / Block are rejected at @dataset cell-parse time, so this
-          // branch is unreachable for cells. Surface as a clean error.
+          // BadVal: a parse error's placeholder. A reader that returned the
+          // row has already reported the error, so this is not reached.
           return nb::make_tuple(std::string("unknown"), nb::none());
         }
       },
-      *cell);
+      value);
+}
+
+nb::object CellToPyTuple(const std::optional<protowire::pxf::ValuePtr>& cell) {
+  if (!cell.has_value()) return nb::none();
+  return ValueToPy(*cell);
 }
 
 // The decode limits of HARDENING.md § Mandatory limits, as Python passes them:
@@ -159,11 +208,61 @@ void ApplyLimits(const PxfLimits& l, protowire::pxf::UnmarshalOptions& opts) {
 
 // PyCellToValue is CellToPyTuple's inverse, for a cell pxf.py has already
 // normalized: None for absent, else (kind, value) with value a str, a bool
-// ("bool") or bytes ("bytes"). A value cell that crossed to Python as
-// ("unknown", None), a list or a block, cannot come back.
-std::optional<protowire::pxf::ValuePtr> PyCellToValue(nb::handle cell) {
+// ("bool"), bytes ("bytes"), a list of cells ("list") or a list of
+// (kind, key, value, quoted) entries ("block"). An "int" or "float" raw
+// text's precision suffix goes back to prec.
+protowire::pxf::ValuePtr PyToValue(nb::handle cell);
+
+protowire::pxf::EntryPtr PyToEntry(nb::handle entry) {
   using namespace protowire::pxf;
-  if (cell.is_none()) return std::nullopt;
+  auto t = nb::cast<nb::tuple>(entry);
+  if (t.size() != 4) {
+    throw nb::value_error("pxf.bind_row: a block entry is a (kind, key, value, quoted) tuple");
+  }
+  const auto kind = nb::cast<std::string>(t[0]);
+  auto key = nb::cast<std::string>(t[1]);
+  const bool quoted = nb::cast<bool>(t[3]);
+  if (kind == "field") {
+    auto p = std::make_unique<Assignment>();
+    p->key = std::move(key);
+    p->key_quoted = quoted;
+    p->value = PyToValue(t[2]);
+    return EntryPtr(std::move(p));
+  }
+  if (kind == "map") {
+    auto p = std::make_unique<MapEntry>();
+    p->key = std::move(key);
+    p->key_quoted = quoted;
+    p->value = PyToValue(t[2]);
+    return EntryPtr(std::move(p));
+  }
+  if (kind == "block") {
+    auto p = std::make_unique<Block>();
+    p->name = std::move(key);
+    p->name_quoted = quoted;
+    for (nb::handle e : nb::cast<nb::list>(t[2])) p->entries.push_back(PyToEntry(e));
+    return EntryPtr(std::move(p));
+  }
+  if (kind == "type") {
+    auto p = std::make_unique<TypeEntry>();
+    p->url = std::move(key);
+    return EntryPtr(std::move(p));
+  }
+  throw nb::value_error(("pxf.bind_row: unknown block entry kind '" + kind + "'").c_str());
+}
+
+// SplitPrec splits "1.5p80" into raw "1.5" and prec "80". PXF numbers are
+// decimal, so a 'p' can only start the suffix.
+template <class T>
+void SplitPrec(const std::string& text, T& v) {
+  const auto at = text.find('p');
+  v.raw = text.substr(0, at);
+  if (at != std::string::npos) v.prec = text.substr(at + 1);
+}
+
+protowire::pxf::ValuePtr PyToValue(nb::handle cell) {
+  using namespace protowire::pxf;
+  if (cell.is_none()) throw nb::value_error("pxf.bind_row: a list element cannot be absent");
   auto t = nb::cast<nb::tuple>(cell);
   if (t.size() != 2) throw nb::value_error("pxf.bind_row: a cell is None or a (kind, value) pair");
   const auto kind = nb::cast<std::string>(t[0]);
@@ -176,12 +275,12 @@ std::optional<protowire::pxf::ValuePtr> PyCellToValue(nb::handle cell) {
   }
   if (kind == "int") {
     auto p = std::make_unique<IntVal>();
-    p->raw = nb::cast<std::string>(v);
+    SplitPrec(nb::cast<std::string>(v), *p);
     return ValuePtr(std::move(p));
   }
   if (kind == "float") {
     auto p = std::make_unique<FloatVal>();
-    p->raw = nb::cast<std::string>(v);
+    SplitPrec(nb::cast<std::string>(v), *p);
     return ValuePtr(std::move(p));
   }
   if (kind == "bool") {
@@ -211,7 +310,22 @@ std::optional<protowire::pxf::ValuePtr> PyCellToValue(nb::handle cell) {
     p->raw = nb::cast<std::string>(v);
     return ValuePtr(std::move(p));
   }
+  if (kind == "list") {
+    auto p = std::make_unique<ListVal>();
+    for (nb::handle e : nb::cast<nb::list>(v)) p->elements.push_back(PyToValue(e));
+    return ValuePtr(std::move(p));
+  }
+  if (kind == "block") {
+    auto p = std::make_unique<BlockVal>();
+    for (nb::handle e : nb::cast<nb::list>(v)) p->entries.push_back(PyToEntry(e));
+    return ValuePtr(std::move(p));
+  }
   throw nb::value_error(("pxf.bind_row: unknown cell kind '" + kind + "'").c_str());
+}
+
+std::optional<protowire::pxf::ValuePtr> PyCellToValue(nb::handle cell) {
+  if (cell.is_none()) return std::nullopt;
+  return PyToValue(cell);
 }
 
 // NewMessageFrom makes a message of desc holding msg_bytes. A row binds into

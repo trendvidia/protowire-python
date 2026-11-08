@@ -28,17 +28,38 @@ from ._schema import fds_for_message
 #   ----        ----------        -----
 #   "null"      None              present-but-null (draft §3.9)
 #   "string"    str               escape-decoded UTF-8
-#   "int"       str               raw text — Python wrapper leaves parse to caller
-#   "float"     str               raw text
+#   "int"       str               raw text — Python wrapper leaves parse to caller.
+#                                 A precision suffix is kept: "1.5p80".
+#   "float"     str               raw text, as for "int"
 #   "bool"      bool              true / false
 #   "bytes"     bytes             base64-decoded
 #   "ident"     str               unquoted identifier (typically an enum tag name)
 #   "timestamp" str               raw RFC3339
 #   "duration"  str               raw duration text
+#   "list"      list[Cell]        `[a, b]`; an element is never None
+#   "block"     list[Entry]       `{ ... }`, its entries in order
+#
+# An Entry is a (kind, key, value, quoted) tuple:
+#
+#   kind        key           value         written as
+#   ----        ---           -----         ----------
+#   "field"     field name    Cell          name = value
+#   "map"       map key       Cell          key: value
+#   "block"     field name    list[Entry]   name { ... }
+#   "type"      type URL      None          @type = "url"
+#
+# quoted is True when the key was written as a string literal (`"k": v`),
+# which tells the string map key "1" from the integer key 1.
+#
+# This keeps what protowire-go's DatasetRow keeps (#47), so a row read as
+# cells binds with bind_row as DatasetReader.scan binds it.
 CellKind = Literal[
-    "null", "string", "int", "float", "bool", "bytes", "ident", "timestamp", "duration"
+    "null", "string", "int", "float", "bool", "bytes", "ident", "timestamp", "duration",
+    "list", "block",
 ]
+EntryKind = Literal["field", "map", "block", "type"]
 Cell = Union[None, tuple[CellKind, object]]
+Entry = tuple[EntryKind, str, object, bool]
 
 
 @dataclass(frozen=True)
@@ -621,9 +642,16 @@ def bind_row(
 
 def _native_cell(cell: Cell | None):
     """A cell in the shape the native bind_row takes: None, or (kind, value)
-    with value a str, or a bool for "bool" and bytes for "bytes"."""
+    with value a str, a bool for "bool", bytes for "bytes", a list of cells
+    for "list" and a list of entries for "block"."""
     if cell is None:
         return None
+    return _native_value(cell)
+
+
+def _native_value(cell):
+    if cell is None:
+        raise ValueError("bind_row: a list element cannot be absent (None)")
     kind, value = cell
     if kind == "null":
         return ("null", None)
@@ -633,4 +661,19 @@ def _native_cell(cell: Cell | None):
         return (kind, bool(value))
     if kind == "bytes":
         return (kind, bytes(value))
+    if kind == "list":
+        return (kind, [_native_value(e) for e in value])
+    if kind == "block":
+        return (kind, [_native_entry(e) for e in value])
     raise ValueError(f"bind_row: unknown cell kind {kind!r}")
+
+
+def _native_entry(entry):
+    kind, key, value, quoted = entry
+    if kind in ("field", "map"):
+        return (kind, str(key), _native_value(value), bool(quoted))
+    if kind == "block":
+        return (kind, str(key), [_native_entry(e) for e in value], bool(quoted))
+    if kind == "type":
+        return (kind, str(key), None, False)
+    raise ValueError(f"bind_row: unknown block entry kind {kind!r}")

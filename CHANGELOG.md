@@ -13,6 +13,21 @@ format changes.
 
 ### Changed
 
+- **A row read as cells keeps its list and block values and its precision
+  suffixes** (#47), as protowire-go's `DatasetRow` keeps them. So a row from
+  `DatasetReader.next_or_none`, iteration or `Result.datasets`, passed to
+  `bind_row`, binds as `DatasetReader.scan` binds it. Before, a list or block
+  cell came back as `("unknown", None)` and `bind_row` refused it, and `1.5p80`
+  came back as `("float", "1.5")`, losing its precision. The public `Cell` type
+  changes:
+  - New kinds `("list", [cell, ...])` and `("block", [entry, ...])`. An entry
+    is a `(kind, key, value, quoted)` tuple of kind `"field"` (`k = v`),
+    `"map"` (`k: v`), `"block"` (`k { ... }`) or `"type"` (`@type = "url"`).
+    `quoted` records a key written as a string literal.
+  - An `"int"` or `"float"` cell's raw text keeps its precision suffix:
+    `("float", "1.5p80")`. **`float(cell[1])` now raises on such a cell**,
+    where before it silently dropped the precision.
+
 - **`pxf.bind_row` and `DatasetReader.scan` bind a row as protowire-go does**
   (#24), through protowire-cpp's `BindRow` rather than writing the row out as
   text and decoding it with `unmarshal`. On all 43 of the spec's
@@ -21,8 +36,8 @@ format changes.
   differently. What changes:
   - An absent cell takes the field's `(pxf.default)`. An absent
     `(pxf.required)` field is an error, as in `unmarshal_full`.
-  - A cell may hold a list or a block (`scan` only; see #47 for rows read as
-    cells), and a column may be a dotted path into a sub-message.
+  - A cell may hold a list or a block, and a column may be a dotted path
+    into a sub-message.
   - **A row binds into what the message already holds,** which is no longer
     cleared first. In a reused message, a field an earlier row set keeps its
     value under an empty or `null` cell, as in Go. Bind each row into a new or
