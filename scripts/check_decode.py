@@ -34,9 +34,9 @@ What each format exercises:
 
 - pxf and sbe go through ``protowire.pxf`` and ``protowire.sbe``, that is
   through the protowire-cpp decoder this port wraps.
-- pb goes through the upstream protobuf runtime. This port has no PB decoder
-  of its own, so these rows test what a caller gets from
-  ``Message.ParseFromString``, and a fix for one of them cannot land here.
+- pb goes through ``protowire.pb``, this port's own PB codec, as the Go
+  reference's goes through its encoding/pb: the bytes decode into the
+  hand-declared dataclasses below, which mirror adversarial.proto.
 - pb-render writes the bytes as PXF through ``pxf.marshal_bytes``, so these
   rows test the protowire-cpp encoder. The bridge reads the bytes one level
   deeper than the encoder's limit, leaving the encoder to refuse. A read that
@@ -62,10 +62,10 @@ there are no hand-written bindings to keep in step with the corpus.
 ``--limit MaxMessageSize=1024`` sets one HARDENING limit for the row, under
 the Go name the manifest uses. pxf rows take all six, sbe rows
 MaxMessageSize and MaxRepeatedCount, and pb-render MaxNestingDepth. pxf-pb
-takes the six, as pxf does, and pb-text none, as in the Go reference. A limit
-this port cannot apply to the row's format exits 2: running the row without
-it would not test the limit. pb rows take none, since the protobuf runtime
-has no such settings.
+takes the six, as pxf does, and pb-text none, as in the Go reference. pb takes
+the five protowire.pb has: all but MaxBytesLiteralLength, which bounds a PXF
+literal. A limit this port cannot apply to the row's format exits 2: running
+the row without it would not test the limit.
 """
 
 from __future__ import annotations
@@ -73,13 +73,16 @@ from __future__ import annotations
 import argparse
 import struct
 import sys
+from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
+from typing import Annotated, Optional
 
 try:
     from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
     from google.protobuf.message import DecodeError
 
-    from protowire import pxf, sbe
+    from protowire import pb, pxf, sbe
 except ImportError as e:  # A broken build must not read as a reject of every row.
     print(f"check_decode: {e}", file=sys.stderr)
     sys.exit(2)
@@ -117,7 +120,7 @@ _FORMAT_LIMITS = {
     "pxf-pb": set(_LIMITS.values()),
     "sbe": {"max_message_size", "max_repeated_count"},
     "pb-render": {"max_nesting_depth"},
-    "pb": set(),
+    "pb": set(_LIMITS.values()) - {"max_bytes_literal_length"},
     "pb-text": set(),
     "envelope": set(),
 }
@@ -254,11 +257,61 @@ def _pb_text(fds_bytes: bytes, schema: str, data: bytes, limits: dict[str, int])
     return 0
 
 
+# Hand-declared mirrors of adversarial.proto for protowire.pb, which reads
+# dataclasses rather than descriptors. Drift from the .proto shows up as a
+# corpus row failing its expectation. Unlike the Go reference's mirror, Tree
+# keeps `children`, so the mirror is the whole message.
+
+
+@dataclass
+class Tree:
+    child: Annotated[Optional[Tree], pb.Field(1)] = None
+    label: Annotated[str, pb.Field(2)] = ""
+    children: Annotated[list[Tree], pb.Field(3)] = field(default_factory=list)
+    branches: Annotated[dict[str, Optional[Tree]], pb.Field(4)] = field(default_factory=dict)
+    tags: Annotated[dict[str, str], pb.Field(5)] = field(default_factory=dict)
+
+
+@dataclass
+class StringHolder:
+    value: Annotated[str, pb.Field(1)] = ""
+
+
+@dataclass
+class BytesHolder:
+    value: Annotated[bytes, pb.Field(1)] = b""
+
+
+@dataclass
+class BigIntHolder:
+    value: Annotated[int, pb.Field(1)] = 0
+
+
+@dataclass
+class ListHolder:
+    values: Annotated[list[int], pb.Field(1, pb.INT32)] = field(default_factory=list)
+
+
+@dataclass
+class BigNumHolder:
+    big_int: Annotated[Optional[int], pb.Field(1, pb.BIGINT)] = None
+    decimal: Annotated[Optional[Decimal], pb.Field(2)] = None
+    big_float: Annotated[Optional[pb.BigFloat], pb.Field(3)] = None
+
+
+_PB_TYPES = {
+    "adversarial.v1." + c.__name__: c
+    for c in (Tree, StringHolder, BytesHolder, BigIntHolder, ListHolder, BigNumHolder)
+}
+
+
 def _decode_pb(fds_bytes: bytes, schema: str, data: bytes, limits: dict[str, int]) -> int:
-    msg = _message_class(fds_bytes, schema)()
+    cls = _PB_TYPES.get(schema)
+    if cls is None:
+        raise SystemExit(f"check_decode: no protowire.pb mirror for {schema}")
     try:
-        msg.ParseFromString(data)
-    except DecodeError as e:
+        pb.unmarshal(data, cls, **limits)
+    except ValueError as e:
         return _reject(f"pb: {e}")
     return 0
 
