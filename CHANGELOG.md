@@ -144,6 +144,18 @@ format changes.
   the corpus's 101-level rows never reached the encoder. A read that fails
   still exits 2.
 
+- **A document at the depth limit with a well-known-type literal at the
+  bottom now decodes** (#40), as protowire-go decodes it and as
+  trendvidia/protowire#537 decided. Before, `pxf.unmarshal` and the other
+  decoders raised upb's `DecodeError` on it. The native decoder returns PB
+  bytes, and a Timestamp written as a literal is no PXF level but one PB
+  level, so 100 PXF levels can be 101 PB levels, one past upb's limit. The
+  same fix makes a `max_nesting_depth` raised past 100 work. When upb refuses
+  the bytes for depth alone, they are parsed again with upb's limit lifted
+  (`SetAllowOversizeProtos`), which is then restored to what it was. The
+  caller's `max_nesting_depth` is still enforced by the native decoder.
+  Caveat: upb's switch is process-wide, so another thread's parse during that
+  retry also gets the lifted limit.
 - **The macOS wheel's support floor no longer depends on the CI runner's
   macOS** (#20). protobuf and abseil are now built from source at
   `MACOSX_DEPLOYMENT_TARGET` and linked statically
