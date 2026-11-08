@@ -11,6 +11,10 @@ format changes.
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-11-08
+
+A major release, because three changes break existing callers: a dataset row's `Cell` gains `list` and `block` kinds and keeps its precision suffix, so `float(cell[1])` raises on `1.5p80` (#47); `bind_row` and `DatasetReader.scan` bind into the message as given instead of clearing it first (#24); and `skip_validate` defaults to `False` there (#24). It is built on protowire-cpp v2.1.0. This release also carries the changes prepared as 1.1.0, which was never tagged.
+
 ### Added
 
 - **`protowire.pb`, a PB codec for dataclasses** (#36, #34): a port of
@@ -30,6 +34,47 @@ format changes.
   its `encoding/pb`. It takes every `--limit` but `MaxBytesLiteralLength`. All
   29 of the corpus's `pb` rows pass, with the same verdict as protowire-go's
   harness on each, and protowire#591 runs Python on the 16 that skipped it.
+
+- **`scripts/check_decode.py --format pxf-pb` and `--format pb-text`** (#35,
+  #37), so the spec's write gate and text gate run this port.
+  - `pxf-pb` decodes with `unmarshal_full` and writes the PB bytes, with map
+    entries in key order as protowire-go writes them.
+  - `pb-text` reads the bytes with the protobuf runtime and writes
+    `pxf.marshal`'s text.
+  - Both pass every case of both gates, with no exclusions: 87 write cases
+    and 60 text cases.
+  - The protobuf runtime (upb, protobuf 7.36.2) ignores `deterministic=True`
+    for map order, so the harness writes map entries itself.
+
+- **`Violation.kind` values `"default_option"`, `"retired_number"` and
+  `"well_known_shape"`,** for the bind-time checks above. They came back as
+  `""`.
+- **Per-call decode limits** (#36), the six of HARDENING.md § Mandatory
+  limits, as keyword arguments on `pxf.unmarshal`, `unmarshal_full`, their
+  `_bytes` forms, `bind_row` and `DatasetReader.from_bytes`:
+  `max_message_size`, `max_nesting_depth`, `max_numeric_literal_digits`,
+  `max_bytes_literal_length`, `max_repeated_count` and
+  `max_big_float_exponent`. 0, the default, keeps protowire-cpp's limit; a
+  negative value is a `ValueError`. `sbe.Codec` and `Codec.from_message` take
+  `max_message_size` and `max_repeated_count` for every call, as
+  protowire-cpp's `sbe::CodecOptions` does. `DatasetReader.scan` binds each
+  row under the reader's limits, and the reader parses each row under its own
+  `max_bytes_literal_length` (see Fixed, protowire-cpp#160). A
+  `max_nesting_depth` raised past 100 loads too (see Fixed, #40).
+- **`scripts/check_decode.py --limit Name=N`**, so the corpus rows that lower
+  a limit run on this port. A limit the row's format has no setting for
+  exits 2, so the row cannot pass as a reject.
+- **`max_nesting_depth` on `pxf.marshal` and `pxf.marshal_bytes`** (#34,
+  protowire#502), the deepest PXF they write, counted as a decoder counts it.
+  0, the default, means 100. Raise it only together with the limit of every
+  reader of the output. A negative value is a `ValueError`.
+
+- **`scripts/check_decode.py`**, the harness `cross_security_check.sh` looks
+  for in this port. Without it the HARDENING corpus
+  reported Python as "not run". PXF and SBE rows run through the wrapped
+  protowire-cpp decoder and PB rows through the protobuf runtime. A row the
+  harness could not run exits 2, not 1, so it cannot pass as a reject.
+  It also handles `pb-render`, the corpus rows that test the encoder (#28).
 
 ### Changed
 
@@ -106,41 +151,12 @@ format changes.
   `name`. This matches the other ports. For `(pxf.required)` on a oneof member,
   `name` is the oneof's name, as protowire-cpp reports it.
 
-### Added
-
-- **`scripts/check_decode.py --format pxf-pb` and `--format pb-text`** (#35,
-  #37), so the spec's write gate and text gate run this port.
-  - `pxf-pb` decodes with `unmarshal_full` and writes the PB bytes, with map
-    entries in key order as protowire-go writes them.
-  - `pb-text` reads the bytes with the protobuf runtime and writes
-    `pxf.marshal`'s text.
-  - Both pass every case of both gates, with no exclusions: 87 write cases
-    and 60 text cases.
-  - The protobuf runtime (upb, protobuf 7.36.2) ignores `deterministic=True`
-    for map order, so the harness writes map entries itself.
-
-- **`Violation.kind` values `"default_option"`, `"retired_number"` and
-  `"well_known_shape"`,** for the bind-time checks above. They came back as
-  `""`.
-- **Per-call decode limits** (#36), the six of HARDENING.md § Mandatory
-  limits, as keyword arguments on `pxf.unmarshal`, `unmarshal_full`, their
-  `_bytes` forms, `bind_row` and `DatasetReader.from_bytes`:
-  `max_message_size`, `max_nesting_depth`, `max_numeric_literal_digits`,
-  `max_bytes_literal_length`, `max_repeated_count` and
-  `max_big_float_exponent`. 0, the default, keeps protowire-cpp's limit; a
-  negative value is a `ValueError`. `sbe.Codec` and `Codec.from_message` take
-  `max_message_size` and `max_repeated_count` for every call, as
-  protowire-cpp's `sbe::CodecOptions` does. `DatasetReader.scan` binds each
-  row under the reader's limits, and the reader parses each row under its own
-  `max_bytes_literal_length` (see Fixed, protowire-cpp#160). A
-  `max_nesting_depth` raised past 100 loads too (see Fixed, #40).
-- **`scripts/check_decode.py --limit Name=N`**, so the corpus rows that lower
-  a limit run on this port. A limit the row's format has no setting for
-  exits 2, so the row cannot pass as a reject.
-- **`max_nesting_depth` on `pxf.marshal` and `pxf.marshal_bytes`** (#34,
-  protowire#502), the deepest PXF they write, counted as a decoder counts it.
-  0, the default, means 100. Raise it only together with the limit of every
-  reader of the output. A negative value is a `ValueError`.
+- **Built against protowire-cpp v1.2.0** (#23), on the way to v2.1.0. v1.0.0
+  segfaulted on deeply nested PXF and read the PXF and SBE options at their
+  old numbers. `Violation.kind` gains `"key_option"`, which v1.1.0 reports.
+  v1.2.0 makes `pxf.marshal` refuse a `pxf.Decimal` past the bounds, where it
+  used to hang (protowire#448), and it checks `(pxf.required)` with
+  `(pxf.default)` itself, so the bridge's copy is gone (#25).
 
 ### Fixed
 
@@ -198,28 +214,6 @@ format changes.
   built for the runner. The wheel-building runners are back on
   `macos-latest`. The floor is unchanged at macOS 15.0. macOS builds
   protobuf v36.2; Linux stays on v25.3.
-
-## [1.1.0] — 2026-10-31
-
-### Added
-
-- **`scripts/check_decode.py`**, the harness `cross_security_check.sh` looks
-  for in this port. Without it the HARDENING corpus
-  reported Python as "not run". PXF and SBE rows run through the wrapped
-  protowire-cpp decoder and PB rows through the protobuf runtime. A row the
-  harness could not run exits 2, not 1, so it cannot pass as a reject.
-  It also handles `pb-render`, the corpus rows that test the encoder (#28).
-  
-### Changed
-
-- **Built against protowire-cpp v1.2.0** in CI and the wheels (#23). v1.0.0
-  segfaulted on deeply nested PXF and read the PXF and SBE options at their
-  old numbers. `Violation.kind` gains `"key_option"`, which v1.1.0 reports.
-  v1.2.0 makes `pxf.marshal` refuse a `pxf.Decimal` past the bounds, where it
-  used to hang (protowire#448), and it checks `(pxf.required)` with
-  `(pxf.default)` itself, so the bridge's copy is gone (#25).
-
-### Fixed
 
 - **`(pxf.required)` with `(pxf.default)` on one field is a bind-time
   violation** (#22), as draft -01 now requires (protowire#453). Such a schema
