@@ -156,6 +156,14 @@ format changes.
   caller's `max_nesting_depth` is still enforced by the native decoder.
   Caveat: upb's switch is process-wide, so another thread's parse during that
   retry also gets the lifted limit.
+- **The macOS wheel's support floor no longer depends on the CI runner's
+  macOS** (#20). protobuf and abseil are now built from source at
+  `MACOSX_DEPLOYMENT_TARGET` and linked statically
+  (`scripts/cibw_install_protobuf.sh`, which replaces
+  `cibw_install_protobuf_linux.sh`), instead of taken from Homebrew bottles
+  built for the runner. The wheel-building runners are back on
+  `macos-latest`. The floor is unchanged at macOS 15.0. macOS builds
+  protobuf v36.2; Linux stays on v25.3.
 
 ## [1.1.0] — 2026-10-31
 
