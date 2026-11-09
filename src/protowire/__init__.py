@@ -5,4 +5,4 @@
 from . import envelope, pb, pxf, sbe
 
 __all__ = ["pxf", "sbe", "envelope", "pb"]
-__version__ = "1.1.0"
+__version__ = "2.0.0"
