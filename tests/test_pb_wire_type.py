@@ -367,6 +367,17 @@ BIG_ROWS = [
     ("1a021d01", "field F: corrupt field 3 in BigFloat: unexpected EOF", ""),
     ("1a030a0101", "ok", ""),
     ("0a020d01", "field I: corrupt field 1 in BigInt: unexpected EOF", ""),
+    # A known field of its own wire type whose value does not read is named
+    # as protowire-go names it (run at a0a78c2), not by its number.
+    ("0a020a05", "field I: corrupt abs in BigInt", ""),
+    ("0a021080", "field I: corrupt negative in BigInt", ""),
+    ("12020a05", "field R: corrupt unscaled in Decimal", ""),
+    ("12021080", "field R: corrupt scale in Decimal", ""),
+    ("12021880", "field R: corrupt negative in Decimal", ""),
+    ("1a020a05", "field F: corrupt mantissa in BigFloat", ""),
+    ("1a021080", "field F: corrupt exponent in BigFloat", ""),
+    ("1a021880", "field F: corrupt prec in BigFloat", ""),
+    ("1a022080", "field F: corrupt negative in BigFloat", ""),
 ]
 
 

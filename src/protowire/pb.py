@@ -1154,11 +1154,24 @@ def _unmarshal_scalar(buf: bytes, pos: int, end: int, k: Any, lim: _Limits) -> t
     return (_signed(z, 64) if k is SINT64 else _signed(z, 32)), p
 
 
-def _sub_fields(buf: bytes, pos: int, end: int, what: str, varints: set, blobs: set) -> dict:
+# The fields of the big-number messages: number -> (name, wire type).
+_BIGINT_FIELDS = {1: ("abs", _BYTES), 2: ("negative", _VARINT)}
+_DECIMAL_FIELDS = {1: ("unscaled", _BYTES), 2: ("scale", _VARINT), 3: ("negative", _VARINT)}
+_BIGFLOAT_FIELDS = {
+    1: ("mantissa", _BYTES),
+    2: ("exponent", _VARINT),
+    3: ("prec", _VARINT),
+    4: ("negative", _VARINT),
+}
+
+
+def _sub_fields(buf: bytes, pos: int, end: int, what: str, known: dict) -> dict:
     """The last value of each known field of a big-number message.
 
     A field is read only from a record of its wire type; any other record is
-    skipped as unknown, as protobuf does (protowire#614).
+    skipped as unknown, as protobuf does (protowire#614). A known field whose
+    value does not read is named as protowire-go names it: ``corrupt abs in
+    BigInt``.
     """
     out: dict = {}
     while pos < end:
@@ -1166,17 +1179,16 @@ def _sub_fields(buf: bytes, pos: int, end: int, what: str, varints: set, blobs: 
             num, typ, pos = _tag(buf, pos, end)
         except _Corrupt:
             raise ValueError(f"corrupt tag in {what}") from None
-        if num in blobs and typ == _BYTES:
+        f = known.get(num)
+        if f is not None and typ == f[1]:
             try:
-                p, pos = _len_prefixed(buf, pos, end)
+                if typ == _BYTES:
+                    p, pos = _len_prefixed(buf, pos, end)
+                    out[num] = buf[p:pos]
+                else:
+                    out[num], pos = _varint(buf, pos, end)
             except _Corrupt:
-                raise ValueError(f"corrupt field {num} in {what}") from None
-            out[num] = buf[p:pos]
-        elif num in varints and typ == _VARINT:
-            try:
-                out[num], pos = _varint(buf, pos, end)
-            except _Corrupt:
-                raise ValueError(f"corrupt field {num} in {what}") from None
+                raise ValueError(f"corrupt {f[0]} in {what}") from None
         else:
             # Unknown, or a known field whose wire type does not match.
             pos = _skip_field(num, typ, buf, pos, end, f" in {what}")
@@ -1184,13 +1196,13 @@ def _sub_fields(buf: bytes, pos: int, end: int, what: str, varints: set, blobs: 
 
 
 def _unmarshal_bigint(buf: bytes, pos: int, end: int) -> int:
-    f = _sub_fields(buf, pos, end, "BigInt", {2}, {1})
+    f = _sub_fields(buf, pos, end, "BigInt", _BIGINT_FIELDS)
     v = int.from_bytes(f.get(1, b""), "big")
     return -v if f.get(2, 0) else v
 
 
 def _unmarshal_decimal(buf: bytes, pos: int, end: int, max_digits: int) -> decimal.Decimal:
-    f = _sub_fields(buf, pos, end, "Decimal", {2, 3}, {1})
+    f = _sub_fields(buf, pos, end, "Decimal", _DECIMAL_FIELDS)
     unscaled = int.from_bytes(f.get(1, b""), "big")
     scale = _signed(f.get(2, 0), 32)  # int32: the low 32 bits, read as signed
     # value = unscaled x 10^(-scale), and both signs of scale materialise
@@ -1203,7 +1215,7 @@ def _unmarshal_decimal(buf: bytes, pos: int, end: int, max_digits: int) -> decim
 
 
 def _unmarshal_bigfloat(buf: bytes, pos: int, end: int, max_exp: int, max_digits: int) -> BigFloat:
-    f = _sub_fields(buf, pos, end, "BigFloat", {2, 3, 4}, {1})
+    f = _sub_fields(buf, pos, end, "BigFloat", _BIGFLOAT_FIELDS)
     negative = bool(f.get(4, 0))
     prec = f.get(3, 0) & _UINT32_MAX  # uint32: the low 32 bits (protowire-go#230)
     if prec == 0:

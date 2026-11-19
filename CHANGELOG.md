@@ -31,6 +31,9 @@ format changes.
   entry: …` where it read `corrupt unknown field 3 in map entry`. Every verdict
   and value matches the protobuf runtime on 606 test inputs, and the corpus's
   nine `pb/wiretype-*` rows pass.
+- **A big-number field whose value does not read is named as protowire-go
+  names it**: `corrupt abs in BigInt`, `corrupt scale in Decimal`, `corrupt
+  prec in BigFloat`, and so on, where it read `corrupt field 1 in BigInt`.
 
 ## [2.0.0] — 2026-11-08
 
