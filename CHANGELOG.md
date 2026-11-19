@@ -11,6 +11,27 @@ format changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`pb.unmarshal` reads a field only from a record of its wire type, as
+  protobuf does** (#57, trendvidia/protowire#614), as protowire-go does since
+  protowire-go#308. It read a known field by its declared type whatever the
+  record's wire type. Wire types 6 and 7 were accepted, and `0a01` on an int64
+  read the length byte as the value 1. A well-formed record of another wire
+  type, such as an int64 sent as `0a0101`, was refused as corrupt. Now wire
+  type 6 or 7 is refused on any field. A known field whose wire type does not
+  match is skipped as an unknown field, and the field is left as it was. A
+  list of numbers still reads both its own wire type and the packed form. Map
+  entries and the `pxf.BigInt`, `pxf.Decimal` and `pxf.BigFloat` messages
+  follow the same rule. **This rejects messages that were accepted before, and
+  accepts some that were refused.** The error for a field that cannot be
+  skipped now gives protobuf's reason, in protowire-go's words: `corrupt field
+  1: proto: cannot parse reserved wire type`, or `corrupt field 3 in BigInt:
+  unexpected EOF`. A map entry's unknown field reads `corrupt field 3 in map
+  entry: …` where it read `corrupt unknown field 3 in map entry`. Every verdict
+  and value matches the protobuf runtime on 606 test inputs, and the corpus's
+  nine `pb/wiretype-*` rows pass.
+
 ## [2.0.0] — 2026-11-08
 
 A major release, because three changes break existing callers: a dataset row's `Cell` gains `list` and `block` kinds and keeps its precision suffix, so `float(cell[1])` raises on `1.5p80` (#47); `bind_row` and `DatasetReader.scan` bind into the message as given instead of clearing it first (#24); and `skip_validate` defaults to `False` there (#24). It is built on protowire-cpp v2.1.0. This release also carries the changes prepared as 1.1.0, which was never tagged.
