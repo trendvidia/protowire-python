@@ -85,10 +85,16 @@ def nested_cls(test_pool):
 
 
 @pytest.fixture(scope="session")
-def pb_oracle_pool() -> descriptor_pool.DescriptorPool:
+def pb_oracle_fds() -> bytes:
+    """Serialized FileDescriptorSet for testdata/pb/conf.proto and bignum.proto."""
+    return _protoc_to_fds(["conf.proto", "bignum.proto"], [str(TESTDATA_DIR / "pb")])
+
+
+@pytest.fixture(scope="session")
+def pb_oracle_pool(pb_oracle_fds: bytes) -> descriptor_pool.DescriptorPool:
     """The oracle schemas for protowire.pb: testdata/pb/conf.proto and bignum.proto."""
     fds = descriptor_pb2.FileDescriptorSet()
-    fds.ParseFromString(_protoc_to_fds(["conf.proto", "bignum.proto"], [str(TESTDATA_DIR / "pb")]))
+    fds.ParseFromString(pb_oracle_fds)
     pool = descriptor_pool.DescriptorPool()
     for f in fds.file:
         pool.Add(f)

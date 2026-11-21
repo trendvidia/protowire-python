@@ -30,8 +30,11 @@ The bytes are protowire-go's, byte for byte, and follow proto3:
 - Every element of a list and both halves of a map entry are written, zeros
   included. A list of numbers (``int``, ``float``, ``bool``) is packed;
   ``unmarshal`` reads packed and unpacked.
-- A field is read by its declared type, whatever wire type the record carries,
-  as Go reads it.
+- A field is read only from a record of the wire type its type is written
+  with, or, for a list of numbers, also the packed form. A record of another
+  wire type is skipped as an unknown field and leaves the field as it was, and
+  wire types 6 and 7 are refused on any field, as protobuf does
+  (protowire#614).
 - A ``str`` must be UTF-8 on the wire; declare ``bytes`` for a bytes field.
 - ``unmarshal`` into an existing object merges, as Go's does: scalars are
   replaced, lists are appended to, maps gain entries, and nested messages are
@@ -74,6 +77,7 @@ from __future__ import annotations
 
 import dataclasses
 import decimal
+import functools
 import math
 import struct
 import sys
@@ -261,6 +265,7 @@ class _FieldInfo:
     name: str
     number: int
     type: _T
+    wire: frozenset  # the wire types the field is read from (_wire_types)
 
 
 @dataclass
@@ -398,12 +403,41 @@ def _struct_info(cls: type) -> _StructInfo:
             raise TypeError(f"pb: {where}: field number {pf.number!r} is outside 1..{_MAX_FIELD_NUMBER}")
         if pf.number in by_number:
             raise TypeError(f"pb: {where}: field number {pf.number} is also {by_number[pf.number].name}")
-        fi = _FieldInfo(f.name, pf.number, _resolve(tp, pf.kind, where))
+        t = _resolve(tp, pf.kind, where)
+        fi = _FieldInfo(f.name, pf.number, t, _wire_types(t))
         fields.append(fi)
         by_number[pf.number] = fi
     info = _StructInfo(cls, fields, by_number)
     _struct_cache[cls] = info
     return info
+
+
+@functools.lru_cache(maxsize=None)
+def _wire_types(t: _T) -> frozenset:
+    """The wire types a field of resolved type t is read from.
+
+    The one its type is written with and, for a list of numbers, the packed
+    (length-delimited) form. A record of any other wire type is not the
+    field's value, so unmarshal skips it as protobuf skips an unknown field
+    (draft -01 § PB Binary Encoding; protowire#614). It mirrors
+    _marshal_scalar's dispatch, as protowire-go's wireTypesOf does.
+    """
+    if t[0] == "optional":
+        t = t[1]
+    if t[0] == "list":
+        et = t[1][1] if t[1][0] == "optional" else t[1]
+        w = _wire_types(et)
+        return w | {_BYTES} if _is_packed(et) else w
+    if t[0] != "scalar":
+        return frozenset({_BYTES})  # a message or a map entry
+    k = t[1]
+    if k is DOUBLE:
+        return frozenset({_FIXED64})
+    if k is FLOAT:
+        return frozenset({_FIXED32})
+    if k == "bool" or (k in _INT_KINDS and k is not BIGINT):
+        return frozenset({_VARINT})
+    return frozenset({_BYTES})  # string, bytes and the big-number messages
 
 
 def _zero(t: _T) -> Any:
@@ -827,8 +861,19 @@ def _limits(
     )
 
 
+# protobuf-go's protowire.ParseError texts. A field skipped as unknown names
+# the reason in its error, as protowire-go does (protowire#614).
+_ERR_EOF = "unexpected EOF"
+_ERR_FIELD_NUMBER = "proto: invalid field number"
+_ERR_OVERFLOW = "proto: variable length integer overflow"
+_ERR_RESERVED = "proto: cannot parse reserved wire type"
+_ERR_END_GROUP = "proto: mismatching end group marker"
+_ERR_PARSE = "proto: parse error"  # protobuf-go's text for a group nested too deep
+
+
 class _Corrupt(Exception):
-    """A wire-level failure; the caller names what was being read."""
+    """A wire-level failure, with protobuf-go's reason; the caller names what
+    was being read."""
 
 
 def _varint(buf: bytes, pos: int, end: int) -> tuple[int, int]:
@@ -836,12 +881,12 @@ def _varint(buf: bytes, pos: int, end: int) -> tuple[int, int]:
     shift = 0
     for i in range(10):
         if pos >= end:
-            raise _Corrupt
+            raise _Corrupt(_ERR_EOF)
         b = buf[pos]
         pos += 1
         if i == 9:
             if b >= 2:  # protobuf-go: the 10th byte carries one bit
-                raise _Corrupt
+                raise _Corrupt(_ERR_OVERFLOW)
             return v | (b << 63), pos
         v |= (b & 0x7F) << shift
         if b < 0x80:
@@ -854,7 +899,7 @@ def _tag(buf: bytes, pos: int, end: int) -> tuple[int, int, int]:
     v, pos = _varint(buf, pos, end)
     num = v >> 3
     if num > _INT32_MAX or num < 1:
-        raise _Corrupt
+        raise _Corrupt(_ERR_FIELD_NUMBER)
     return num, v & 7, pos
 
 
@@ -862,13 +907,13 @@ def _len_prefixed(buf: bytes, pos: int, end: int) -> tuple[int, int]:
     """The start and end of a length-prefixed value."""
     n, pos = _varint(buf, pos, end)
     if n > end - pos:
-        raise _Corrupt
+        raise _Corrupt(_ERR_EOF)
     return pos, pos + n
 
 
 def _fixed(buf: bytes, pos: int, end: int, size: int) -> int:
     if end - pos < size:
-        raise _Corrupt
+        raise _Corrupt(_ERR_EOF)
     return pos + size
 
 
@@ -882,22 +927,39 @@ def _skip(num: int, typ: int, buf: bytes, pos: int, end: int) -> int:
         return _fixed(buf, pos, end, 4)
     if typ == _BYTES:
         return _len_prefixed(buf, pos, end)[1]
+    if typ == _END_GROUP:
+        raise _Corrupt(_ERR_END_GROUP)  # an end-group that ends nothing
     if typ != _START_GROUP:
-        raise _Corrupt  # a stray end-group, or a reserved wire type
+        raise _Corrupt(_ERR_RESERVED)  # wire type 6 or 7
     groups = [num]
     while groups:
         n2, t2, pos = _tag(buf, pos, end)
         if t2 == _END_GROUP:
             if n2 != groups[-1]:
-                raise _Corrupt
+                raise _Corrupt(_ERR_END_GROUP)
             groups.pop()
         elif t2 == _START_GROUP:
             if len(groups) > _GROUP_RECURSION_LIMIT:
-                raise _Corrupt
+                raise _Corrupt(_ERR_PARSE)
             groups.append(n2)
         else:
             pos = _skip(n2, t2, buf, pos, end)
     return pos
+
+
+def _skip_field(num: int, typ: int, buf: bytes, pos: int, end: int, where: str) -> int:
+    """Skip the value of a field read as unknown: one the message does not
+    declare, or one whose wire type does not match its type.
+
+    It refuses wire types 6 and 7, a stray end-group and a value cut short, as
+    protobuf does, with protowire-go's text: ``corrupt field <num><where>:
+    <reason>``, where ``where`` names the message it is in (" in BigInt"), if
+    not the dataclass's own.
+    """
+    try:
+        return _skip(num, typ, buf, pos, end)
+    except _Corrupt as e:
+        raise ValueError(f"corrupt field {num}{where}: {e}") from None
 
 
 C = TypeVar("C")
@@ -952,11 +1014,10 @@ def _unmarshal_struct(buf: bytes, pos: int, end: int, obj: Any, depth: int, lim:
         except _Corrupt:
             raise ValueError("corrupt tag") from None
         fi = by_number.get(num)
-        if fi is None:
-            try:
-                pos = _skip(num, typ, buf, pos, end)
-            except _Corrupt:
-                raise ValueError(f"corrupt field {num}") from None
+        if fi is None or typ not in fi.wire:
+            # An unknown field, or a known one whose wire type does not match
+            # its type, which protobuf treats as unknown (protowire#614).
+            pos = _skip_field(num, typ, buf, pos, end, "")
             continue
         try:
             value, pos = _unmarshal_field(buf, pos, end, typ, fi.type, getattr(obj, fi.name), depth, lim)
@@ -1011,27 +1072,26 @@ def _unmarshal_field(
             raise _depth_err(lim.max_depth)
         d = cur if cur is not None else {}
         kt, vt = t[1], t[2]
+        kw, vw = _wire_types(kt), _wire_types(vt)
         key, val = _zero(kt), _zero(vt)
         while p < pend:
             try:
                 enum, etyp, p = _tag(buf, p, pend)
             except _Corrupt:
                 raise ValueError("corrupt tag in map entry") from None
-            if enum == 1:
+            if enum == 1 and etyp in kw:
                 try:
                     key, p = _unmarshal_field(buf, p, pend, etyp, kt, key, depth + 1, lim)
                 except ValueError as e:
                     raise ValueError(f"map key: {e}") from None
-            elif enum == 2:
+            elif enum == 2 and etyp in vw:
                 try:
                     val, p = _unmarshal_field(buf, p, pend, etyp, vt, val, depth + 1, lim)
                 except ValueError as e:
                     raise ValueError(f"map value: {e}") from None
             else:
-                try:
-                    p = _skip(enum, etyp, buf, p, pend)
-                except _Corrupt:
-                    raise ValueError(f"corrupt unknown field {enum} in map entry") from None
+                # Unknown, or a key or value whose wire type does not match.
+                p = _skip_field(enum, etyp, buf, p, pend, " in map entry")
         if len(d) >= lim.max_repeated and key not in d:
             raise ValueError(f"map field exceeds MaxRepeatedCount={lim.max_repeated}")
         d[key] = val
@@ -1094,35 +1154,55 @@ def _unmarshal_scalar(buf: bytes, pos: int, end: int, k: Any, lim: _Limits) -> t
     return (_signed(z, 64) if k is SINT64 else _signed(z, 32)), p
 
 
-def _sub_fields(buf: bytes, pos: int, end: int, what: str, varints: set, blobs: set) -> dict:
-    """The last value of each known field of a big-number message."""
+# The fields of the big-number messages: number -> (name, wire type).
+_BIGINT_FIELDS = {1: ("abs", _BYTES), 2: ("negative", _VARINT)}
+_DECIMAL_FIELDS = {1: ("unscaled", _BYTES), 2: ("scale", _VARINT), 3: ("negative", _VARINT)}
+_BIGFLOAT_FIELDS = {
+    1: ("mantissa", _BYTES),
+    2: ("exponent", _VARINT),
+    3: ("prec", _VARINT),
+    4: ("negative", _VARINT),
+}
+
+
+def _sub_fields(buf: bytes, pos: int, end: int, what: str, known: dict) -> dict:
+    """The last value of each known field of a big-number message.
+
+    A field is read only from a record of its wire type; any other record is
+    skipped as unknown, as protobuf does (protowire#614). A known field whose
+    value does not read is named as protowire-go names it: ``corrupt abs in
+    BigInt``.
+    """
     out: dict = {}
     while pos < end:
         try:
             num, typ, pos = _tag(buf, pos, end)
         except _Corrupt:
             raise ValueError(f"corrupt tag in {what}") from None
-        try:
-            if num in blobs:
-                p, pos = _len_prefixed(buf, pos, end)
-                out[num] = buf[p:pos]
-            elif num in varints:
-                out[num], pos = _varint(buf, pos, end)
-            else:
-                pos = _skip(num, typ, buf, pos, end)
-        except _Corrupt:
-            raise ValueError(f"corrupt field {num} in {what}") from None
+        f = known.get(num)
+        if f is not None and typ == f[1]:
+            try:
+                if typ == _BYTES:
+                    p, pos = _len_prefixed(buf, pos, end)
+                    out[num] = buf[p:pos]
+                else:
+                    out[num], pos = _varint(buf, pos, end)
+            except _Corrupt:
+                raise ValueError(f"corrupt {f[0]} in {what}") from None
+        else:
+            # Unknown, or a known field whose wire type does not match.
+            pos = _skip_field(num, typ, buf, pos, end, f" in {what}")
     return out
 
 
 def _unmarshal_bigint(buf: bytes, pos: int, end: int) -> int:
-    f = _sub_fields(buf, pos, end, "BigInt", {2}, {1})
+    f = _sub_fields(buf, pos, end, "BigInt", _BIGINT_FIELDS)
     v = int.from_bytes(f.get(1, b""), "big")
     return -v if f.get(2, 0) else v
 
 
 def _unmarshal_decimal(buf: bytes, pos: int, end: int, max_digits: int) -> decimal.Decimal:
-    f = _sub_fields(buf, pos, end, "Decimal", {2, 3}, {1})
+    f = _sub_fields(buf, pos, end, "Decimal", _DECIMAL_FIELDS)
     unscaled = int.from_bytes(f.get(1, b""), "big")
     scale = _signed(f.get(2, 0), 32)  # int32: the low 32 bits, read as signed
     # value = unscaled x 10^(-scale), and both signs of scale materialise
@@ -1135,7 +1215,7 @@ def _unmarshal_decimal(buf: bytes, pos: int, end: int, max_digits: int) -> decim
 
 
 def _unmarshal_bigfloat(buf: bytes, pos: int, end: int, max_exp: int, max_digits: int) -> BigFloat:
-    f = _sub_fields(buf, pos, end, "BigFloat", {2, 3, 4}, {1})
+    f = _sub_fields(buf, pos, end, "BigFloat", _BIGFLOAT_FIELDS)
     negative = bool(f.get(4, 0))
     prec = f.get(3, 0) & _UINT32_MAX  # uint32: the low 32 bits (protowire-go#230)
     if prec == 0:
